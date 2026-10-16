@@ -95,7 +95,9 @@ const quiet = () => {};
     put("r316-state.json", { days: {} });
     fs.unlinkSync(path.join(root, "backend", "data", "r316-ledger.jsonl"));
     r = (await A.run({ root, nowMs: now, dry: true, log: quiet, sleeves: r316 })).results[0];
-    ok("no record and no expectFrom: not-started, no alert", r.status === "not-started" && r.missed.length === 0);
+    ok("no record and no expectFrom: the latest due session is owed (a sleeve that never started is an alert)", r.status === "missed" && r.missed.length === 1 && r.missed[0].session === "2026-10-16");
+    r = (await A.run({ root, nowMs: now, dry: true, log: quiet, sleeves: [{ ...r316[0], expectFrom: "2026-10-20" }] })).results[0];
+    ok("no record and expectFrom still in the future: not-started, no alert", r.status === "not-started" && r.missed.length === 0);
     fs.writeFileSync(path.join(root, "backend", "data", "r316-state.json"), "{ torn");
     r = (await A.run({ root, nowMs: now, dry: true, log: quiet, sleeves: r316 })).results[0];
     ok("a state file that exists but cannot be read is an alert", r.status === "missed" && /unreadable/.test(r.note));
@@ -114,7 +116,16 @@ const quiet = () => {};
     ok("R151: each step on its own — only afterClose of 10-16 is missed", r.missed.length === 1 && r.missed[0].step === "afterClose" && r.missed[0].session === "2026-10-16");
     put("r219-zn-month-end.json", { windows: {}, lastRun: {} });
     r = (await A.run({ root, nowMs: ET("2026-10-16T18:00:00"), dry: true, log: quiet, sleeves: pick("R219") })).results[0];
-    ok("a lastRun that was never written and no expectFrom: not-started", r.status === "not-started");
+    ok("a lastRun that was never written: the latest due session is owed", r.status === "missed" && r.missed.length === 1 && r.missed[0].session === "2026-10-16" && /last closeArm on never/.test(r.note));
+    put("r219-zn-month-end.json", { lastRun: { closeArm: "2099-01-01" } });
+    r = (await A.run({ root, nowMs: ET("2026-10-16T18:00:00"), dry: true, log: quiet, sleeves: pick("R219") })).results[0];
+    ok("a lastRun date in the future is ignored (not 'ok forever')", r.status === "missed");
+    put("r151-state.json", { lastRun: { closeArm: "2026-10-15", afterClose: "2026-10-15", preOpen: "2026-10-16" } });
+    const nfS = fakeNotify(true), rS = await A.run({ root, nowMs: ET("2026-10-16T18:00:00"), notify: nfS, log: quiet, sleeves: pick("R151") });
+    ok("two steps missed on one session are two alerts, deduped separately", rS.exit === 3 && /2026-10-16\/closeArm/.test(nfS.sent[0].b) && /2026-10-16\/afterClose/.test(nfS.sent[0].b));
+    put("r151-state.json", { lastRun: { closeArm: "2026-10-16", afterClose: "2026-10-15", preOpen: "2026-10-16" } });
+    const rS2 = await A.run({ root, nowMs: ET("2026-10-16T18:30:00"), notify: nfS, log: quiet, sleeves: pick("R151") });
+    ok("…after closeArm/10-16 was alerted, afterClose/10-16 alone sends nothing new (already alerted under its own key)", rS2.exit === 3 && nfS.sent.length === 1);
   }
 
   // ---- 5. the marks shape (R191, R231) --------------------------------------------------------------------------------------
@@ -186,13 +197,65 @@ const quiet = () => {};
     ok("two sleeves silent: ONE alert naming both", two.exit === 3 && nf.sent.length === 1 && /R218 \(1 session\)/.test(nf.sent[0].t) && /R191 \(1 session\)/.test(nf.sent[0].t));
   }
 
+  // ---- 7b. silence paths: a bad file never silences the run; edge shapes -----------------------------------------------------
+  {
+    const { A, root, put, data } = makeRoot(), pick = (...ids) => A.SLEEVES.filter((s) => ids.includes(s.id)), now = ET("2026-10-16T17:00:00");
+    put("r186-month-end.json", { lastRun: { closeArm: "2026-10-14" } });
+    put("r316-state.json", null);
+    let res = await A.run({ root, nowMs: now, dry: true, log: quiet, sleeves: pick("R316", "R186") });
+    ok("a state file holding null is an alert (unreadable), and the other sleeve is still checked", res.results[0].status === "missed" && /not a JSON object/.test(res.results[0].note) && res.results[1].status === "missed");
+    put("r316-state.json", { firstLiveDecision: "2026-10-05", days: { "2026-10-15": null, "2026-10-16": "x" } });
+    res = await A.run({ root, nowMs: now, dry: true, log: quiet, sleeves: pick("R316", "R186") });
+    ok("null / non-object day entries do not crash; they are not decisions", res.results[0].status === "missed" && res.results[0].missed.some((m) => m.session === "2026-10-16") && res.results[1].status === "missed");
+    fs.mkdirSync(path.join(data, "r316-ledger.jsonl"));
+    const nf = fakeNotify(true); res = await A.run({ root, nowMs: now, notify: nf, log: quiet, sleeves: pick("R316", "R186") });
+    ok("a check that throws (ledger is a directory) is an alert for that sleeve, and the other sleeve is still alerted", res.exit === 3 && res.results[0].missed[0].step === "check-error" && /check itself failed/.test(nf.sent[0].b) && /R186/.test(nf.sent[0].t));
+    for (const f of ["r191-crypto-trend.json"]) put(f, []);
+    res = await A.run({ root, nowMs: now, dry: true, log: quiet, sleeves: pick("R191") });
+    ok("a state that is an array is an alert, not not-started", res.results[0].status === "missed" && /an array/.test(res.results[0].note));
+  }
+  {
+    const { A, root, put, read } = makeRoot(), r346 = A.SLEEVES.filter((s) => s.id === "R346"), now = ET("2026-10-14T17:00:00");
+    put("sleeve-silence-alert.json", null);
+    const nf = fakeNotify(true), r1 = await A.run({ root, nowMs: now, notify: nf, log: quiet, sleeves: r346 });
+    ok("an alert-state file holding null does not stop the alert", r1.exit === 3 && nf.sent.length === 1 && Object.keys(read("sleeve-silence-alert.json").alerts.R346).length === 5);
+    put("sleeve-silence-alert.json", { spec: "x", alerts: "corrupt", lastRun: null });
+    const r2 = await A.run({ root, nowMs: now, notify: nf, log: quiet, sleeves: r346 });
+    ok("an alerts field that is not an object: alert sent, state repaired", r2.exit === 3 && nf.sent.length === 2 && typeof read("sleeve-silence-alert.json").alerts.R346 === "object");
+    put("sleeve-silence-alert.json", { spec: "x", alerts: { R346: "corrupt" }, lastRun: null });
+    const r3 = await A.run({ root, nowMs: now, notify: nf, log: quiet, sleeves: r346 });
+    ok("a per-sleeve entry that is not an object: alert sent, state repaired", r3.exit === 3 && nf.sent.length === 3 && Object.keys(read("sleeve-silence-alert.json").alerts.R346).length === 5);
+    ok("notify is called with email:false, priority high, tags warning", JSON.stringify(nf.sent[0].o) === JSON.stringify({ priority: "high", tags: "warning", email: false }));
+  }
+  {
+    const { A, root, put, has } = makeRoot(), all = sessionsBetween(A, "2026-10-05", "2026-10-16");
+    put("r316-state.json", { firstLiveDecision: "2026-10-05", days: days(all) });
+    const nf = fakeNotify(true), d = await A.run({ root, nowMs: ET("2026-10-16T17:00:00"), dry: true, notify: nf, log: quiet, sleeves: A.SLEEVES.filter((s) => s.id === "R316") });
+    ok("--dry on a healthy run: exit 0, nothing written", d.exit === 0 && !has("sleeve-silence-alert.json") && nf.sent.length === 0);
+    put("r316-state.json", { firstLiveDecision: "2026-10-12", days: days(["2026-10-14", "2026-10-15", "2026-10-16"]) });
+    const r = (await A.run({ root, nowMs: ET("2026-10-16T17:00:00"), dry: true, log: quiet, sleeves: A.SLEEVES.filter((s) => s.id === "R316") })).results[0];
+    ok("firstLiveDecision earlier than the first day record: the sessions between are missed", r.missed.map((m) => m.session).join() === "2026-10-12,2026-10-13", JSON.stringify(r.missed));
+    put("r316-state.json", { firstLiveDecision: "2099-01-01", days: {} });
+    const r2 = (await A.run({ root, nowMs: ET("2026-10-16T17:00:00"), dry: true, log: quiet, sleeves: A.SLEEVES.filter((s) => s.id === "R316") })).results[0];
+    ok("a firstLiveDecision in the future is ignored (the sleeve is owed its latest session)", r2.status === "missed");
+  }
+  {
+    const { A, root, put } = makeRoot(), r191 = A.SLEEVES.filter((s) => s.id === "R191");
+    // a late Thursday run (after 00:00 UTC) marks d = Thursday; asOf says the run was Thursday ET, so Friday is still owed
+    put("r191-crypto-trend.json", { asOf: "2026-10-16T00:30:00.000Z", marks: [{ coin: "BTC", d: "2026-10-15", close: 1 }] });
+    const r = (await A.run({ root, nowMs: ET("2026-10-16T21:30:00"), dry: true, log: quiet, sleeves: r191 })).results[0];
+    ok("marks: the run date is asOf's ET date — a late Thursday run does not cover Friday", r.status === "missed" && r.missed.map((m) => m.session).join() === "2026-10-16", JSON.stringify(r));
+    put("r191-crypto-trend.json", { asOf: "2026-10-16T22:40:00.000Z", marks: [{ coin: "BTC", d: "2026-10-15", close: 1 }] });
+    ok("marks: a Friday-evening save covers Friday", (await A.run({ root, nowMs: ET("2026-10-16T21:30:00"), dry: true, log: quiet, sleeves: r191 })).results[0].status === "ok");
+  }
+
   // ---- 8. the CLI and the package ----------------------------------------------------------------------------------------
   {
     const { A } = makeRoot();
     ok("parseArgs: --dry --now", (() => { const o = A.parseArgs(["--dry", "--now", "2026-10-14T21:00:00Z"]); return o.dry === true && o.nowMs === Date.parse("2026-10-14T21:00:00Z"); })());
     ok("parseArgs: a bad --now or an unknown flag is an error", !!A.parseArgs(["--now", "soon"]).error && !!A.parseArgs(["--send"]).error);
     const src = fs.readFileSync(STAGED, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    ok("the only alert path is backend/notify.js", (src.match(/require\(["']\.\/notify\.js["']\)/g) || []).length === 1 && !/nodemailer|telegram|https?:\/\//i.test(src));
+    ok("the only alert path is backend/notify.js", (src.match(/require\(["']\.\/notify\.js["']\)/g) || []).length >= 1 && (src.match(/require\(["'][^"']+["']\)/g) || []).every((x) => /["'](fs|path|\.\/notify\.js|\.\/lib\/run-window\.js|\.\/lib\/atomic-write\.js)["']/.test(x)) && !/nodemailer|telegram|https?:\/\//i.test(src));
     ok("no network, no broker, no child process", !/require\(["'](https?|net|tls|dns|child_process)["']\)|fetch\(|alpaca|broker/i.test(src));
     ok("no JSON written except through atomic-write", !/writeFileSync|appendFileSync/.test(src));
   }
@@ -212,4 +275,4 @@ const quiet = () => {};
   for (const d of temps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
   if (fails.length) { console.log(`\nSELFTEST FAILED: ${fails.length} of ${n}\n  ` + fails.join("\n  ")); process.exit(1); }
   console.log(`\nSELFTEST PASSED (${n} checks)`);
-})().catch((e) => { console.log("SELFTEST CRASHED: " + (e && e.stack)); process.exit(1); });
+})().catch((e) => { for (const d of temps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } } console.log("SELFTEST CRASHED: " + (e && e.stack)); process.exit(1); });

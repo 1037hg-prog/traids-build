@@ -23,14 +23,16 @@
  * A session S is DUE once the ET clock passes S at the sleeve's dueEt (its decision time plus a grace). The calendar is weekdays
  * minus lib/run-window.js MARKET_HOLIDAYS; early-close days are sessions (they decide earlier, so dueEt still holds).
  *
- * NOT EXPECTED (no alert): before the sleeve's start (firstLiveDecision, or SLEEVES[].expectFrom, or its first record); while
+ * NOT EXPECTED (no alert): before the sleeve's start (firstLiveDecision, or SLEEVES[].expectFrom, or its first record) — but a
+ * sleeve with NO record at all is owed its latest due session unless its expectFrom is still in the future; while
  * backend/data/TRAIDS_STOP exists; while the sleeve's OFF file exists IF that switch stops its decisions (offStops); while its HALT
  * file says guard-violation; on a non-session day. A missing or unreadable state file after the sleeve's start IS an alert.
  *
  * DEDUPE. data/sleeve-silence-alert.json keeps alerts[sleeve][session] = ISO of delivery. An entry is written ONLY after notify()
  * returned truthy, so an undelivered alert is tried again at the next run. Entries older than 30 days are pruned.
  * EXIT. 0 nothing missed · 3 missed and the alert was delivered (or already delivered earlier) · 4 missed and NOBODY was told
- * (notify failed or threw) · 2 bad arguments. OFF switch: data/sleeve-silence-OFF (exit 0, nothing checked).
+ * (notify failed or threw), or the check itself died and its failure alert was not delivered · 2 bad arguments. One sleeve whose
+ * files make its check throw is an alert for that sleeve, never a crash of the run. OFF switch: data/sleeve-silence-OFF (exit 0, nothing checked).
  * No network of its own, no broker, no order. JSON is written only through lib/atomic-write.js.
  */
 const fs = require("fs"), path = require("path");
@@ -80,54 +82,75 @@ function readLedgerRows(f) {
   return rows;
 }
 
+const isObj = (o) => !!o && typeof o === "object" && !Array.isArray(o);
+
 /**
  * checkSleeve(sleeve, { dataDir, nowMs, holidays }) -> { id, status: "ok"|"missed"|"paused"|"not-started", missed: [{session, step?}], note }
+ * "not-started" (silent) only while the sleeve's expectFrom is still in the future. A sleeve in SLEEVES with no record at all, a
+ * missing state file, or a state file that cannot be read or is not an object, is an alert for the latest due session: a sleeve
+ * that never started looks exactly like R346's silent tasks. Dates later than today (ET) in a sleeve's records are ignored.
  */
 function checkSleeve(sl, { dataDir, nowMs, holidays }) {
-  const D = (f) => path.join(dataDir, f), res = { id: sl.id, status: "ok", missed: [], note: "" };
+  const D = (f) => path.join(dataDir, f), res = { id: sl.id, status: "ok", missed: [], note: "" }, today = etNow(nowMs).date;
   if (fs.existsSync(D("TRAIDS_STOP"))) return { ...res, status: "paused", note: "TRAIDS_STOP is set" };
   if (sl.off && sl.offStops && fs.existsSync(D(sl.off))) return { ...res, status: "paused", note: `${sl.off} is set (it stops this sleeve's decisions)` };
-  if (sl.halt) { let h = null; try { h = readJsonOr(D(sl.halt), null); } catch { h = { kind: "unreadable" }; } if (h && h.kind === "guard-violation") return { ...res, status: "paused", note: `${sl.halt}: guard-violation (${String(h.why || "").slice(0, 80)})` }; }
+  if (sl.halt) { let h = null; try { h = readJsonOr(D(sl.halt), null); } catch { h = { kind: "unreadable" }; } if (isObj(h) && h.kind === "guard-violation") return { ...res, status: "paused", note: `${sl.halt}: guard-violation (${String(h.why || "").slice(0, 80)})` }; }
   const offNote = sl.off && !sl.offStops && fs.existsSync(D(sl.off)) ? ` (${sl.off} is set; this sleeve still records its decision while it is)` : "";
 
   let st;
   try { st = readJsonOr(D(sl.state), undefined); } catch (e) { st = { __unreadable: String(e.message).slice(0, 100) }; }
+  if (st !== undefined && !isObj(st)) st = { __unreadable: `not a JSON object (${st === null ? "null" : Array.isArray(st) ? "an array" : typeof st})` };
   const expectFrom = isYmd(sl.expectFrom) ? sl.expectFrom : null;
+  const notYet = expectFrom && expectFrom > today;
+  const past = (d) => (d && d <= today ? d : null);
   const steps = sl.kind === "lastRun" ? sl.steps : [{ field: null, dueEt: sl.dueEt }];
+  if (notYet) return { ...res, status: "not-started", note: `expected from ${expectFrom}` };   // every due session is before it
 
   for (const step of steps) {
     const due = dueSessions(nowMs, step.dueEt, holidays);
     let start = expectFrom, decided = () => false, last = null;
-    if (st && st.__unreadable) { decided = () => false; }
-    else if (st === undefined) { decided = () => false; }
+    if (st === undefined || st.__unreadable) { /* nothing decided */ }
     else if (sl.kind === "days") {
-      const days = (st && st.days) || {}, rows = sl.ledger ? readLedgerRows(D(sl.ledger)) : [];
-      const fromLedger = new Set(rows.filter((r) => r && r.kind === "decision" && isYmd(r.date) && !r.quoteError).map((r) => r.date));
-      decided = (s) => (days[s] && days[s].decision === true) || fromLedger.has(s);
-      const firsts = [ymdOf(st.firstLiveDecision), ...Object.keys(days).filter((k) => isYmd(k) && days[k].decision === true).sort().slice(0, 1), ...[...fromLedger].sort().slice(0, 1)].filter(Boolean).sort();
+      const days = isObj(st.days) ? st.days : {}, rows = sl.ledger ? readLedgerRows(D(sl.ledger)) : [];
+      const dayOk = (k) => isObj(days[k]) && days[k].decision === true;
+      const fromLedger = new Set(rows.filter((r) => isObj(r) && r.kind === "decision" && isYmd(r.date) && !r.quoteError).map((r) => r.date));
+      decided = (s) => dayOk(s) || fromLedger.has(s);
+      const firsts = [past(ymdOf(st.firstLiveDecision)), ...Object.keys(days).filter((k) => isYmd(k) && dayOk(k) && k <= today), ...[...fromLedger].filter((d) => d <= today)].filter(Boolean).sort();
       if (!start && firsts.length) start = firsts[0];
     } else if (sl.kind === "lastRun") {
-      last = ymdOf(st && st.lastRun && st.lastRun[step.field]);
+      last = past(ymdOf(isObj(st.lastRun) ? st.lastRun[step.field] : null));
       decided = (s) => !!last && s <= last;
       if (!start && last) start = last;
     } else if (sl.kind === "marks") {
-      const marks = Array.isArray(st && st.marks) ? st.marks.filter((m) => m && isYmd(m.d)) : [];
-      const runDates = marks.map((m) => (m.catchUp || m.carriedFrom ? ymdOf(m.markedOn) : addDays(m.d, 1))).filter(Boolean);
-      last = runDates.length ? runDates.sort().pop() : null;
+      // the run date: the ET date of the state's own save time (asOf, written by every live save), else from the marks
+      const asOf = Date.parse(st.asOf || ""), asOfEt = Number.isFinite(asOf) ? past(etNow(asOf).date) : null;
+      const marks = Array.isArray(st.marks) ? st.marks.filter((m) => isObj(m) && isYmd(m.d)) : [];
+      const fromMarks = marks.map((m) => (m.catchUp || m.carriedFrom ? ymdOf(m.markedOn) : addDays(m.d, 1))).map(past).filter(Boolean).sort().pop() || null;
+      last = asOfEt || fromMarks;
       decided = (s) => !!last && last >= s;
-      if (!start && last) start = last;
+      if (!start && (last || marks.length)) start = last || marks.map((m) => m.d).sort()[0];
     }
-    if (!start && st && st.__unreadable && due.length) start = due[due.length - 1];   // a state file that exists but cannot be read is always an alert
-    if (!start) { if (res.status === "ok") { res.status = "not-started"; res.note = `no record yet and no expectFrom${st === undefined ? ` (${sl.state} absent)` : ""}`; } continue; }
+    if (!start) {
+      if (due.length) start = due[due.length - 1];                // no record at all: the latest due session is owed
+    }
     const owed = due.filter((s) => s >= start && !decided(s));
     for (const s of owed) res.missed.push({ session: s, ...(step.field ? { step: step.field } : {}) });
     if (owed.length) {
-      const why = st === undefined ? `${sl.state} does not exist` : st && st.__unreadable ? `${sl.state} is unreadable (${st.__unreadable})` : sl.kind === "days" ? "no decision recorded for the session" : `last ${step.field || "run"} on ${last || "never"}`;
+      const why = st === undefined ? `${sl.state} does not exist` : st.__unreadable ? `${sl.state} is unreadable (${st.__unreadable})` : sl.kind === "days" ? "no decision recorded for the session" : `last ${step.field || "run"} on ${last || "never"}`;
       res.note += `${res.note ? "; " : ""}${step.field ? step.field + ": " : ""}${why}`;
     }
   }
   if (res.missed.length) { res.status = "missed"; res.note += offNote; }
   return res;
+}
+
+/** checkSleeve, but a sleeve whose check throws is an alert for the latest due session — never a crash of the whole run. */
+function checkSleeveSafe(sl, ctx) {
+  try { return checkSleeve(sl, ctx); }
+  catch (e) {
+    const due = dueSessions(ctx.nowMs, sl.dueEt || (sl.steps && sl.steps[0] && sl.steps[0].dueEt) || "16:30", ctx.holidays);
+    return { id: sl.id, status: "missed", missed: due.length ? [{ session: due[due.length - 1], step: "check-error" }] : [], note: `the check itself failed (${String(e && e.message).slice(0, 100)}) — read the sleeve's files by hand` };
+  }
 }
 
 // ── alert state ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -146,12 +169,13 @@ async function run({ root = path.resolve(__dirname, ".."), nowMs = Date.now(), d
   if (lastListed && now.date.slice(0, 4) > lastListed.slice(0, 4)) log(`sleeve-silence: WARNING lib/run-window.js MARKET_HOLIDAYS ends ${lastListed}; holidays after it are treated as sessions`);
   let owner = {}; try { owner = (readJsonOr(path.join(dataDir, "host-ownership.json"), {}) || {}).units || {}; } catch { owner = {}; }
 
-  const results = sleeves.map((sl) => checkSleeve(sl, { dataDir, nowMs, holidays }));
+  const results = sleeves.map((sl) => checkSleeveSafe(sl, { dataDir, nowMs, holidays }));
   log(`sleeve-silence ${now.date} ${now.hhmm} ET${dry ? " (dry)" : ""}`);
   for (const r of results) log(`  ${r.status.padEnd(11)} ${r.id}${r.missed.length ? ` — missed ${r.missed.map((m) => m.session + (m.step ? "/" + m.step : "")).join(", ")}` : ""}${r.note ? ` — ${r.note}` : ""}`);
 
   let st; try { st = readJsonOr(stateFile, freshAlerts()); } catch { st = freshAlerts(); }
-  st.alerts = st.alerts || {};
+  if (!isObj(st) || !isObj(st.alerts)) st = { ...freshAlerts(), ...(isObj(st) ? { lastRun: st.lastRun || null } : {}), alerts: {} };
+  for (const id of Object.keys(st.alerts)) if (!isObj(st.alerts[id])) delete st.alerts[id];
   const key = (m) => m.session + (m.step ? "/" + m.step : "");
   const fresh = results.filter((r) => r.status === "missed").map((r) => ({ r, items: r.missed.filter((m) => !(st.alerts[r.id] || {})[key(m)]) })).filter((x) => x.items.length);
   const anyMissed = results.some((r) => r.status === "missed");
@@ -198,7 +222,13 @@ function parseArgs(argv) {
 if (require.main === module) {
   const o = parseArgs(process.argv.slice(2));
   if (o.error) { console.error(`${o.error}\nusage: sleeve-silence-alert.js [--dry] [--now ISO]`); process.exit(2); }
-  run(o).then((r) => process.exit(r.exit), (e) => { console.error("sleeve-silence: failed: " + (e && e.stack || e)); process.exit(1); });
+  run(o).then((r) => process.exit(r.exit), async (e) => {
+    // the check itself died: say so through notify.js (unless --dry); exit 3 if that was delivered, else 4 (nobody was told)
+    console.error("sleeve-silence: failed: " + (e && e.stack || e));
+    if (o.dry) process.exit(4);
+    let told = false; try { told = !!(await require("./notify.js").notify("TRAIDS — sleeve-silence check FAILED", `The sleeve silent-death check could not run: ${String(e && e.message).slice(0, 300)}. Sleeves are unwatched until it is fixed.`, { priority: "high", tags: "warning", email: false })); } catch { told = false; }
+    process.exit(told ? 3 : 4);
+  });
 }
 
-module.exports = { SLEEVES, LOOKBACK_SESSIONS, dueSessions, checkSleeve, run, parseArgs, etNow, isSession };
+module.exports = { SLEEVES, LOOKBACK_SESSIONS, dueSessions, checkSleeve, checkSleeveSafe, run, parseArgs, etNow, isSession };
