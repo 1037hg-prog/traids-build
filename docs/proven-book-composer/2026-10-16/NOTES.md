@@ -8,7 +8,7 @@ It is the **composer only**. It never decides a sleeve's rule, never registers a
 
 ## What the composer does (the task's spec, made exact)
 
-- **Sleeves.** R180 is month-end Treasuries (IEF). R313 is IBS on 20 ETFs and R328 is RSI-2 on 20 ETFs. Each sleeve's own runner decides its exits and entries. R180's wanted state can be given directly (`want`) or computed by `r180Want()` from the month's sessions. That follows R180's registered rule N3: hold IEF after the closes of sessions −6..−2, flat after the last session's close. It is known-answer tested on October 2026.
+- **Sleeves.** R180 is month-end Treasuries (IEF). R313 is IBS on 20 ETFs and R328 is RSI-2 on 20 ETFs. Each sleeve's own runner decides its exits and entries. R180's wanted state can be given directly (`want`) or computed by `r180Window()` from the month's whole calendar (`monthSessions` + `closedWeekdays`). That follows R180's registered rule N3: hold IEF after the closes of sessions −6..−2, flat after the last session's close. It is known-answer tested on October 2026.
 - **One capital, no margin.**
   - After the plan, gross ≤ `exposureCap` × equity. `exposureCap` above 1 is refused, and so is negative cash.
   - Buys are paid from cash on hand. Tonight's sale proceeds count only with `countExitProceeds: true`. The default is false: a cash account does not spend unsettled money.
@@ -26,7 +26,7 @@ It is the **composer only**. It never decides a sleeve's rule, never registers a
 
 ## Checks (cloud, 2026-10-16)
 
-`node docs/proven-book-composer/2026-10-16/selftest.cjs` → `ALL 45 CASES PASSED`. The sizes in it are FIXTURE values, plainly not R353's. It covers:
+`node docs/proven-book-composer/2026-10-16/selftest.cjs` → `ALL 56 CASES PASSED`. The sizes in it are FIXTURE values, plainly not R353's. It covers:
 
 - R180's window (known answer, October 2026) and R180 via monthSessions.
 - Known plans: empty book, full-slot entries in priority order, whole shares, exits, ignored exits, unsettled proceeds.
@@ -51,6 +51,23 @@ Cycle 1 result: 37/37 passed and 27 of 31 mutations were caught. No-margin, the 
 - **D8 (open question) — when the plan fills.** The plan assumes every order fills at `asOf`'s close (all the rules are close-to-close). **Confirm at home** that the proven book executes it at that close. If it runs a session later, every sleeve shifts by one session, R180's window included.
 
 No case was removed or weakened (37 → 45). The equivalent mutant M24 (`r180YieldsToDips` ignored while the Stacker covers the need) stays uncatchable by design.
+
+## Changes after checker cycle 2
+
+Cycle 2 result: no regressions. 540,000 boundary nights matched an exact-arithmetic reference, and 41 of 54 mutants were killed (the others were equivalent or test gaps). Its findings, all fixed:
+
+- **X1 (medium) — the Stacker could crowd out the first layer.** In a cash account a Stacker sale frees cap room tonight but cash only tomorrow.
+  - The Stacker now also **yields to R180's buy-up** (for cash too when proceeds count).
+  - On the night before R180's window opens (session −7, known when `monthSessions` is given), a cash account **holds R180's missing amount back from the offer**. The plan shows it as `offer.heldBackForR180Usd`.
+  - Tomorrow's **dip** demand cannot be known tonight. **Set `reserveUsd` from R353 to the dips' usual nightly demand.** The Stacker should hold instruments that can be sold at the close.
+  - The "R180 below target" note now names the real cause.
+- **X2 / X3 — the month calendar.** R180's input is now the month's **whole calendar**: `monthSessions` plus `closedWeekdays` (holidays). Together they must cover every weekday of the month exactly once. A "sessions so far" list, a weekend date, an empty list or a non-date is refused. Known answers: October 2026, and May 2021 with Memorial Day on the 31st.
+- **X4 — test gaps.** New cases cover an exact fit that needs a yield (found by search against a raw comparison), exit validation, and `aw.cjs` leaving no temp folder.
+
+No case was removed or weakened (45 → 56). Two cases changed:
+
+- The partial-month refusal now expects the new message, because the check itself changed (X2).
+- The random-night invariant "a yield only on a dip night" now also allows "a yield to R180's window on a night R180 buys", because of the new behaviour (X1).
 
 ## Missing from this clean copy (not reconstructed)
 

@@ -91,14 +91,40 @@ section("checker cycle 1: exact fits, priority, rank, stackerYields", () => {
   ok("stackerYields false: the Stacker is never sold for a dip; R180 yields instead", !sells(sy, "stacker").length && sells(sy, "R180").length >= 1 && buys(sy, "R313").length === 12, JSON.stringify(sells(sy)));
 });
 
+section("checker cycle 2: the full month calendar, the Stacker never crowds out R180, an exact fit that needs a yield", () => {
+  const oct = []; for (let d = 1; d <= 31; d++) { const t = `2026-10-${String(d).padStart(2, "0")}`, g = new Date(t + "T12:00:00Z").getUTCDay(); if (g && g !== 6) oct.push(t); }
+  const refuses = (f, re) => { try { f(); return false; } catch (e) { return re.test(e.message); } };
+  ok("a 'sessions so far' list ending INSIDE R180's window (10-28, asOf 10-28) is REFUSED — every weekday of the month must be a session or a closed weekday", refuses(() => K.r180Want("2026-10-28", oct.filter((d) => d <= "2026-10-28")), /whole calendar is required/));
+  ok("a weekend date, an empty list, a non-date: each REFUSED with a clear reason", refuses(() => K.r180Want("2026-10-30", [...oct, "2026-10-31"]), /weekend/) && refuses(() => K.r180Want("2026-10-30", []), /non-empty/) && refuses(() => K.r180Want("2026-10-30", [...oct, 7]), /not a date/));
+  // May 2021: Memorial Day is Monday the 31st -> the last session is Friday the 28th
+  const may = []; for (let d = 1; d <= 31; d++) { const t = `2021-05-${String(d).padStart(2, "0")}`, g = new Date(t + "T12:00:00Z").getUTCDay(); if (g && g !== 6 && t !== "2021-05-31") may.push(t); }
+  const w = (d) => K.r180Window(d, may, ["2021-05-31"]);
+  ok("May 2021 with Memorial Day (05-31) as a closed weekday: sessions -6..-2 are 05-21 .. 05-27: flat after 05-20 (wantNext true), held after 05-21 and 05-27, flat after 05-28 (the last session)", !w("2021-05-20").want && w("2021-05-20").wantNext && w("2021-05-21").want && w("2021-05-27").want && !w("2021-05-28").want && !w("2021-05-28").wantNext);
+  ok("the same month without its closed weekday: REFUSED (05-31 is neither a session nor closed)", refuses(() => K.r180Want("2026-05-20".replace("2026", "2021"), may), /2021-05-31/));
+  // X1: on the night BEFORE R180's window (session -7), a cash account holds R180's target back from the Stacker's offer
+  const n7 = oct[oct.length - 7], pre = K.compose(NIGHT({ asOf: n7, cash: 100000, intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct, closedWeekdays: [] } } }), CFG());
+  ok(`the night before R180's window (${n7}, session -7), cash account: $50,000 held back for R180, the offer is the other $50,000`, pre.r180.want === false && pre.r180.wantNext === true && pre.offer.heldBackForR180Usd === 50000 && pre.offer.usd === 50000, JSON.stringify(pre.offer));
+  const preP = K.compose(NIGHT({ asOf: n7, cash: 100000, intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG({ countExitProceeds: true }));
+  ok("... with proceeds counting, nothing is held back (the Stacker can yield to R180 tomorrow and pay for it)", preP.offer.heldBackForR180Usd === 0 && preP.offer.usd === 100000);
+  const s6 = K.compose(NIGHT({ asOf: oct[oct.length - 6], cash: 0, positions: [{ sleeve: "stacker", sym: "BIL", qty: 1000 }], intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG({ countExitProceeds: true }));
+  ok("R180's window opens with all the money in the Stacker (proceeds count): the Stacker YIELDS to R180, which buys its target; the note no longer blames the dip-buys", sells(s6, "stacker").length === 1 && /R180's window/.test(sells(s6, "stacker")[0].why) && s6.after.bySleeve.R180 === 50000, JSON.stringify(s6.orders.map((o) => [o.sleeve, o.side, o.qty, o.why])));
+  const s6c = K.compose(NIGHT({ asOf: oct[oct.length - 6], cash: 0, positions: [{ sleeve: "stacker", sym: "BIL", qty: 1000 }], intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG());
+  ok("... in a cash account the Stacker is not sold for nothing (its sale could not pay tonight); R180 is noted short, naming the unsettled Stacker money", !sells(s6c).length && s6c.notes.some((n) => /in the Stacker and not settled/.test(n)));
+  // N14: an exact fit that NEEDS a yield (found by search against a raw comparison)
+  const ex = K.compose(NIGHT({ cash: 420.63, positions: [{ sleeve: "R180", sym: "IEF", qty: 1 }], prices: { ...PX, IEF: 52.87, AAA: 18.94 }, intents: { R313: { exits: [], entries: [{ sym: "AAA" }] }, R328: { exits: [], entries: [] }, R180: { want: true } } }),
+    CFG({ countExitProceeds: true, sleeves: { R313: { slotUsd: 473.5 }, R328: { slotUsd: 5000 }, R180: { sym: "IEF", targetUsd: 1e9 } } }));
+  ok("an exact fit that needs R180 to yield (cash 420.63 + one IEF 52.87 = 473.50, the slot): the yield is made and the dip bought at full size", buys(ex, "R313").length === 1 && buys(ex, "R313")[0].qty === 25 && sells(ex, "R180").length === 1 && !ex.skipped.length, JSON.stringify(ex.orders.map((o) => [o.sleeve, o.side, o.qty])));
+});
+
 section("refusals", () => {
   const bad = (n, c, re) => { try { K.compose(n, c); return false; } catch (e) { return re.test(e.message); } };
   ok("exposureCap above 1 (margin): REFUSED", bad(NIGHT(), CFG({ exposureCap: 1.2 }), /margin/));
   ok("negative cash (margin in use): REFUSED", bad(NIGHT({ cash: -10 }), CFG(), /negative cash/));
   ok("an unknown sleeve, a short (qty <= 0), a held name with no price, a duplicate position: each REFUSED", bad(NIGHT({ positions: [{ sleeve: "R999", sym: "SPY", qty: 1 }] }), CFG(), /unknown sleeve/) && bad(NIGHT({ positions: [{ sleeve: "R313", sym: "SPY", qty: -5 }] }), CFG(), /positive integer/) && bad(NIGHT({ positions: [{ sleeve: "R313", sym: "ZZZ", qty: 5 }] }), CFG(), /no price/) && bad(NIGHT({ positions: [{ sleeve: "R313", sym: "SPY", qty: 5 }, { sleeve: "R313", sym: "SPY", qty: 5 }] }), CFG(), /twice/));
   ok("a MISSING R313 or R328 block (its runner did not report), a bare-string entry, a non-numeric rank: each REFUSED (never read as 'nothing to do')", bad(NIGHT({ intents: { R328: { exits: [], entries: [] }, R180: { want: false } } }), CFG(), /intents\.R313/) && bad(NIGHT({ intents: { R313: { exits: [], entries: ["SPY"] }, R328: { exits: [], entries: [] }, R180: { want: false } } }), CFG(), /entries\[0\]/) && bad(NIGHT({ intents: { R313: { exits: [], entries: [{ sym: "SPY", rank: "x" }] }, R328: { exits: [], entries: [] }, R180: { want: false } } }), CFG(), /rank/));
+  ok("an exit that is not a symbol (a number): REFUSED", bad(NIGHT({ intents: { R313: { exits: [5], entries: [] }, R328: { exits: [], entries: [] }, R180: { want: false } } }), CFG(), /exits\[0\]/));
   ok("a held R180 position on another instrument (TLT while the config says IEF): REFUSED", bad(NIGHT({ positions: [{ sleeve: "R180", sym: "TLT", qty: 5 }], prices: { ...PX, TLT: 90 } }), CFG(), /R180 position is TLT/));
-  ok("R180 monthSessions with a date twice, or only the sessions seen so far: REFUSED", (() => { const oct = ["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30"]; try { K.r180Want("2026-10-27", [...oct, "2026-10-27"]); return false; } catch (e) { if (!/twice/.test(e.message)) return false; } try { K.r180Want("2026-10-15", ["2026-10-01", "2026-10-02", "2026-10-15"]); return false; } catch (e) { return /whole month/.test(e.message); } })());
+  ok("R180 monthSessions with a date twice, or only the sessions seen so far: REFUSED", (() => { const oct = ["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30"]; try { K.r180Want("2026-10-27", [...oct, "2026-10-27"]); return false; } catch (e) { if (!/twice/.test(e.message)) return false; } try { K.r180Want("2026-10-15", ["2026-10-01", "2026-10-02", "2026-10-15"]); return false; } catch (e) { return /whole calendar is required/.test(e.message); } })());
   ok("a missing slot size, a bad entryPriority, a missing R180 intent: each REFUSED", bad(NIGHT(), CFG({ sleeves: { R313: {}, R328: { slotUsd: 5000 }, R180: { sym: "IEF", targetUsd: 1 } } }), /slotUsd/) && bad(NIGHT(), CFG({ entryPriority: ["R313"] }), /entryPriority/) && bad(NIGHT({ intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] } } }), CFG(), /intents\.R180/));
 });
 
@@ -122,7 +148,7 @@ section("invariants over 3,000 random nights (seeded)", () => {
     const offerOk = Math.abs(p.offer.usd - Math.max(0, Math.min(cap - p.after.grossUsd, p.after.cashUsd + (cfg.countExitProceeds ? p.after.unsettledProceedsUsd : 0)) - cfg.reserveUsd)) < 0.02;
     const r180Max = p.after.bySleeve.R180 <= Math.max(cfg.sleeves.R180.targetUsd, positions.filter((x) => x.sleeve === "R180").reduce((a, x) => a + x.qty * prices.IEF, 0)) + 1e-6;
     const notWanted = night.intents.R180.want || p.after.bySleeve.R180 === 0;
-    const yieldOnlyWhenEntered = !p.orders.some((o) => /yields/.test(o.why)) || buys(p).some((o) => o.sleeve !== "R180");
+    const yieldOnlyWhenEntered = (!p.orders.some((o) => /yields to a dip-buy/.test(o.why)) || buys(p).some((o) => o.sleeve !== "R180")) && (!p.orders.some((o) => /yields to R180's window/.test(o.why)) || (night.intents.R180.want && buys(p, "R180").length > 0));
     const dipHeld = positions.filter((x) => (x.sleeve === "R313" || x.sleeve === "R328") && !night.intents[x.sleeve].exits.includes(x.sym)).reduce((a, x) => a + x.qty * prices[x.sym], 0);
     const capOk = p.after.grossUsd <= Math.max(cap, dipHeld) + 0.01 && (p.after.grossUsd <= cap + 0.01 || !buys(p).length);
     if (!(capOk && p.after.cashUsd >= -0.01 && exitsOk && fullSlot && offerOk && r180Max && notWanted && yieldOnlyWhenEntered)) broken.push(`night ${t}: ${JSON.stringify({ g: p.after.grossUsd, cap, dipHeld, cash: p.after.cashUsd, exitsOk, fullSlot, offerOk, r180Max, notWanted, yieldOnlyWhenEntered })}`);
@@ -135,10 +161,12 @@ section("invariants over 3,000 random nights (seeded)", () => {
 section("the CLI, and no broker / network / order code", () => {
   const nf = path.join(TMP, "night.json"), cf = path.join(TMP, "cfg.json"), out = path.join(TMP, "plan.json");
   fs.writeFileSync(nf, JSON.stringify(NIGHT({ intents: { R313: { exits: [], entries: [{ sym: "SPY" }] }, R328: { exits: [], entries: [] }, R180: { want: true } } }))); fs.writeFileSync(cf, JSON.stringify(CFG()));
+  const awBefore = fs.readdirSync(os.tmpdir()).filter((f) => /^aw-/.test(f)).length;
   const logs = [];
   const { writeJsonAtomic } = require(path.join(H, "aw.cjs")).loadAtomicWrite(REPO);
   const rc = K.main(["--input", nf, "--config", cf, "--out", out], { log: (l) => logs.push(l), err: (l) => logs.push(l), writeJson: writeJsonAtomic });
   const plan = JSON.parse(fs.readFileSync(out, "utf8"));
+  ok("loading atomic-write through aw.cjs leaves no temp folder behind", fs.readdirSync(os.tmpdir()).filter((f) => /^aw-/.test(f)).length <= awBefore);
   ok("--out writes the plan through backend/lib/atomic-write.js (exit 0), the same as compose()", rc === 0 && /PLAN 2026-10-15: 2 order/.test(logs[0]) && JSON.stringify(plan) === JSON.stringify(K.compose(JSON.parse(fs.readFileSync(nf, "utf8")), CFG())), logs.join(" "));
   const r2 = cp.spawnSync(process.execPath, [SRC, "--input", nf, "--config", cf], { encoding: "utf8" });
   ok("without --out: prints the plan, writes nothing", r2.status === 0 && JSON.parse(r2.stdout).schema === "proven-book-plan-v1");

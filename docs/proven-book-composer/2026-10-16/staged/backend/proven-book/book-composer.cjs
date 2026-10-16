@@ -20,7 +20,10 @@
  *   - IDLE CASH IS OFFERED to the second layer (the Stacker): offer = min(cash after the plan, cap room after the plan) - reserveUsd, never
  *     below 0. The composer only states the offer; the Stacker's own rule (registered at home) decides whether and how to use it, and its
  *     positions come back as held positions of sleeve "stacker" the next night (then they count against the cap like any other, and they
- *     are what yields FIRST when a dip entry needs room: config.stackerYields, default true — the second layer never crowds out the first).
+ *     are what yields FIRST when a dip entry, or R180's window, needs room: config.stackerYields, default true). In a CASH account
+ *     (countExitProceeds false) a Stacker sale frees cap room tonight but cash only tomorrow: the offer therefore holds back reserveUsd (set
+ *     it to the dips' usual nightly demand) and, on the night before R180's window opens, R180's missing amount; the Stacker should hold
+ *     instruments that can be sold at the close.
  *   - OVER THE CAP before any buy (held positions grew, or equity fell): the Stacker, then R180, are cut back toward the cap; held dip positions
  *     are never cut, and nothing is bought while they alone are over it.
  *   - Integer shares: a dip entry buys floor(slotUsd / price) shares (0 shares = skipped); IEF floor((target) / price).
@@ -30,7 +33,7 @@
  * TIMING: every order of the plan is meant to fill at asOf's CLOSE (the dip rules and R180 are close-to-close). If the proven book executes
  * the plan later (the next session), each sleeve shifts by a session — confirm at home before use.
  * nightly.json (proven-book-nightly-v1): { asOf: "YYYY-MM-DD", cash, positions: [{ sleeve, sym, qty, price }], prices: { SYM: last close },
- *   intents: { R313: { exits: [sym], entries: [{ sym, rank }] }, R328: {...}, R180: { want: true|false } | { monthSessions: [dates] } } }
+ *   intents: { R313: { exits: [sym], entries: [{ sym, rank }] }, R328: {...}, R180: { want: true|false } | { monthSessions: [dates], closedWeekdays: [dates] } } }
  */
 "use strict";
 const fs = require("fs"), path = require("path");
@@ -39,20 +42,33 @@ const fin = Number.isFinite, r2 = (x) => Math.round(x * 100) / 100;
 const EPS = 1e-4, short = (have, need) => have < need - EPS;
 const DIP = ["R313", "R328"], CAL = "R180", STACKER = "stacker", SLEEVES = [...DIP, CAL, STACKER];
 
-/** R180's registered window (N3): after the close of `asOf`, hold IEF iff asOf is one of the month's sessions -6..-2 (the entry is at the
- *  close of session -6, the exit at the close of session -1). monthSessions: the month's trading sessions (sorted, asOf among them). */
-function r180Want(asOf, monthSessions) {
+/**
+ * R180's registered window (N3): after the close of `asOf`, hold IEF iff asOf is one of the month's sessions -6..-2 (the entry is at the
+ * close of session -6, the exit at the close of session -1). The month's FULL calendar is required (checker cycle 2, X2/X3): monthSessions =
+ * its trading sessions, closedWeekdays = its weekdays the exchange is closed (holidays); together they must be EVERY weekday of the month,
+ * each once — so a list of "the sessions seen so far" can never pass for the month. -> { want, wantNext } (wantNext: the state after the
+ * NEXT session's close; false after the month's last session, since a month's first sessions are never in its window).
+ */
+function r180Window(asOf, monthSessions, closedWeekdays = []) {
+  const okDate = (d) => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) && new Date(d + "T12:00:00Z").toISOString().slice(0, 10) === d;
+  if (!okDate(asOf)) throw new Error(`R180: asOf ${JSON.stringify(asOf)} is not a date`);
+  if (!Array.isArray(monthSessions) || !monthSessions.length) throw new Error("R180: monthSessions must be a non-empty list of dates");
+  if (!Array.isArray(closedWeekdays)) throw new Error("R180: closedWeekdays must be a list of dates");
+  const ym = asOf.slice(0, 7), all = [...monthSessions, ...closedWeekdays];
+  for (const d of all) {
+    if (!okDate(d)) throw new Error(`R180: ${JSON.stringify(d)} is not a date`);
+    if (d.slice(0, 7) !== ym) throw new Error(`R180: ${d} is not in asOf's month`);
+    const g = new Date(d + "T12:00:00Z").getUTCDay(); if (g === 0 || g === 6) throw new Error(`R180: ${d} is a weekend day`);
+  }
+  if (new Set(all).size !== all.length) throw new Error("R180: a date is given twice (monthSessions and closedWeekdays must not repeat or overlap)");
+  const [y, m] = ym.split("-").map(Number), dim = new Date(Date.UTC(y, m, 0)).getUTCDate(), have = new Set(all);
+  for (let d = 1; d <= dim; d++) { const t = `${ym}-${String(d).padStart(2, "0")}`, g = new Date(t + "T12:00:00Z").getUTCDay(); if (g !== 0 && g !== 6 && !have.has(t)) throw new Error(`R180: the weekday ${t} is neither a session nor a closed weekday — the month's whole calendar is required`); }
   const s = [...monthSessions].sort(), i = s.indexOf(asOf);
-  if (new Set(s).size !== s.length) throw new Error("R180: monthSessions holds a date twice");
-  // the list must be the WHOLE month (from the exchange calendar), not the sessions seen so far: its last session must fall in the month's
-  // last 5 calendar days (a month never ends with more than a weekend plus a holiday after its last session)
-  { const [y, m] = asOf.split("-").map(Number), dim = new Date(Date.UTC(y, m, 0)).getUTCDate(), lastDay = +s[s.length - 1].slice(8, 10);
-    if (lastDay < dim - 4) throw new Error(`R180: monthSessions ends ${s[s.length - 1]} — it must be the whole month's sessions (from the calendar), not those seen so far`); }
   if (i < 0) throw new Error(`R180: ${asOf} is not a session of the month given`);
-  if (s.some((d) => d.slice(0, 7) !== asOf.slice(0, 7))) throw new Error("R180: monthSessions must all be in asOf's month");
-  const fromEnd = s.length - i;              // 1 = the last session
-  return fromEnd >= 2 && fromEnd <= 6;
+  const inWin = (k) => { const fromEnd = s.length - k; return fromEnd >= 2 && fromEnd <= 6; };   // fromEnd 1 = the last session
+  return { want: inWin(i), wantNext: i + 1 < s.length ? inWin(i + 1) : false };
 }
+const r180Want = (asOf, monthSessions, closedWeekdays = []) => r180Window(asOf, monthSessions, closedWeekdays).want;
 
 /** check a config (throws listing every problem) */
 function checkConfig(c) {
@@ -87,7 +103,7 @@ function checkNightly(n) {
     for (const [k, en] of x.entries.entries()) if (!en || typeof en !== "object" || typeof en.sym !== "string" || !en.sym || (en.rank != null && !fin(en.rank))) e(`intents.${s}.entries[${k}]: { sym, rank? (a number) }`);
     for (const [k, sym] of x.exits.entries()) if (typeof sym !== "string" || !sym) e(`intents.${s}.exits[${k}]: a symbol`);
   }
-  if (!I[CAL] || !(typeof I[CAL].want === "boolean" || Array.isArray(I[CAL].monthSessions))) e(`intents.${CAL}: want (true/false) or monthSessions`);
+  if (!I[CAL] || !(typeof I[CAL].want === "boolean" || Array.isArray(I[CAL].monthSessions))) e(`intents.${CAL}: want (true/false) or monthSessions (+ closedWeekdays)`);
   if (bad.length) throw new Error("tonight's input is refused:\n  - " + bad.join("\n  - "));
   return n;
 }
@@ -111,7 +127,7 @@ function compose(nightly, config) {
     orders.push({ sleeve: s, sym, side: "sell", qty: p.qty, estUsd: r2(p.usd), why: "its rule's exit" }); pending += p.usd; pos.delete(k);
   }
   // 2. R180's wanted state tonight
-  const cal = C.sleeves[CAL], want = typeof N.intents[CAL].want === "boolean" ? N.intents[CAL].want : r180Want(N.asOf, N.intents[CAL].monthSessions);
+  const cal = C.sleeves[CAL], win = typeof N.intents[CAL].want === "boolean" ? { want: N.intents[CAL].want, wantNext: null } : r180Window(N.asOf, N.intents[CAL].monthSessions, N.intents[CAL].closedWeekdays || []), want = win.want;
   const calKey = CAL + " " + cal.sym, calHeld = pos.get(calKey);
   const gross = () => [...pos.values()].reduce((a, p) => a + p.qty * px(p.sym), 0);
   const spendable = () => cash + (C.countExitProceeds ? pending : 0);
@@ -132,12 +148,12 @@ function compose(nightly, config) {
   if (overCap() > 1e-9) { trimFor(STACKER); trimFor(CAL); if (overCap() > 1e-9) notes.push(`over the exposure cap by ${r2(overCap())} with held dip positions alone — nothing is bought until their exits bring the book under it`); }
   const dipHeldAfterExits = [...pos.values()].filter((p) => DIP.includes(p.sleeve)).reduce((a, p) => a + p.qty * px(p.sym), 0);
   // 3. dip entries, full size or skipped, in priority order; R180 and then the Stacker yield room when allowed
-  const yieldFrom = (sleeve, needUsd) => {   // sell whole shares of a yielding position to free needUsd; returns usd freed into `pending`
+  const yieldFrom = (sleeve, needUsd, forWhat = "a dip-buy") => {   // sell whole shares of a yielding position to free needUsd; returns usd freed into `pending`
     let freed = 0;
     for (const [k, p] of [...pos.entries()].filter(([, p]) => p.sleeve === sleeve).sort((a, b) => a[0].localeCompare(b[0]))) {
       if (freed >= needUsd) break;
       const price = px(p.sym), q = Math.min(p.qty, Math.ceil((needUsd - freed) / price));
-      orders.push({ sleeve, sym: p.sym, side: "sell", qty: q, estUsd: r2(q * price), why: `yields to a dip-buy (${sleeve === STACKER ? "the second layer never crowds out the first" : "R180 is sized to fit"})` });
+      orders.push({ sleeve, sym: p.sym, side: "sell", qty: q, estUsd: r2(q * price), why: `yields to ${forWhat} (${sleeve === STACKER ? "the second layer never crowds out the first" : "R180 is sized to fit"})` });
       freed += q * price; p.qty -= q; if (p.qty === 0) pos.delete(k);
     }
     return freed;
@@ -174,14 +190,26 @@ function compose(nightly, config) {
     const cur = pos.get(calKey), curQ = cur ? cur.qty : 0, targetQ = Math.floor(cal.targetUsd / price);
     if (curQ > targetQ) { const q = curQ - targetQ; orders.push({ sleeve: CAL, sym: cal.sym, side: "sell", qty: q, estUsd: r2(q * price), why: "R180 above its target" }); pending += q * price; if (targetQ) cur.qty = targetQ; else pos.delete(calKey); }
     else if (curQ < targetQ) {
+      // the second layer never crowds out the first (checker cycle 2, X1): the Stacker yields to R180's buy-up too — for the cap at once, and
+      // for cash only when proceeds count (a cash account cannot spend tonight's Stacker sale tonight)
+      if (C.stackerYields) {
+        const want$ = (targetQ - curQ) * price, capRoom = capUsd - gross(), capShort = want$ - capRoom;
+        const need = C.countExitProceeds ? Math.max(capShort, want$ - spendable()) : Math.min(capShort, spendable() - capRoom);
+        if (need > EPS && [...pos.values()].some((p) => p.sleeve === STACKER)) { const f = yieldFrom(STACKER, need, "R180's window"); pending += f; }
+      }
       const q = Math.min(targetQ - curQ, Math.floor((Math.max(0, room()) + EPS) / price));
       if (q > 0) { orders.push({ sleeve: CAL, sym: cal.sym, side: "buy", qty: q, estUsd: r2(q * price), why: q < targetQ - curQ ? "R180 up to what is left" : "R180 to its target" }); if (C.countExitProceeds) { const u = q * price, fp = Math.min(pending, u); pending -= fp; cash -= u - fp; } else cash -= q * price; if (cur) cur.qty += q; else pos.set(calKey, { sleeve: CAL, sym: cal.sym, qty: q, price }); }
-      if (curQ + q < targetQ) notes.push(`R180 below its target: ${curQ + q} of ${targetQ} shares (the dip-buys hold the rest of the cap)`);
+      if (curQ + q < targetQ) notes.push(`R180 below its target: ${curQ + q} of ${targetQ} shares (the cap or the settled cash is taken by the dip-buys, or is in the Stacker and not settled until tomorrow)`);
     }
   }
   // 5. the offer to the second layer
   const grossAfter = gross(), cashAfter = cash + (C.countExitProceeds ? pending : 0);
-  const offerUsd = Math.max(0, Math.min(capUsd - grossAfter, cashAfter) - C.reserveUsd);
+  // in a cash account the Stacker's money is not free again until the day after it sells: on the night before R180's window opens, R180's
+  // missing amount is held back from the offer, so tomorrow's entry finds settled cash (checker cycle 2, X1). Tomorrow's DIP demand is
+  // unknown tonight: reserveUsd is that hold-back (NOTES: set it from R353 to the dip sleeves' usual nightly demand).
+  const calNowUsd = [...pos.values()].filter((p) => p.sleeve === CAL).reduce((a, p) => a + p.qty * px(p.sym), 0);
+  const holdBackR180 = !C.countExitProceeds && win.wantNext === true && !want ? Math.max(0, cal.targetUsd - calNowUsd) : 0;
+  const offerUsd = Math.max(0, Math.min(capUsd - grossAfter, cashAfter) - C.reserveUsd - holdBackR180);
   const bySleeve = Object.fromEntries(SLEEVES.map((s) => [s, r2([...pos.values()].filter((p) => p.sleeve === s).reduce((a, p) => a + p.qty * px(p.sym), 0))]));
   const checks = {
     grossWithinCap: grossAfter <= Math.max(capUsd, dipHeldAfterExits) + 2 * EPS && (grossAfter <= capUsd + 2 * EPS || !orders.some((o) => o.side === "buy")),
@@ -195,8 +223,8 @@ function compose(nightly, config) {
     schema: "proven-book-plan-v1", asOf: N.asOf, equity: r2(equity), capUsd: r2(capUsd), cashBefore: r2(N.cash),
     orders, skipped, notes,
     after: { grossUsd: r2(grossAfter), cashUsd: r2(cash), unsettledProceedsUsd: r2(pending), bySleeve, positions: [...pos.values()].map((p) => ({ sleeve: p.sleeve, sym: p.sym, qty: p.qty })).sort((a, b) => (a.sleeve + a.sym).localeCompare(b.sleeve + b.sym)) },
-    offer: { toLayer: STACKER, usd: r2(offerUsd), reserveUsd: C.reserveUsd, note: "idle cash the second layer may use tonight; its rule decides (registered at home)" },
-    r180: { want, targetUsd: cal.targetUsd }, checks,
+    offer: { toLayer: STACKER, usd: r2(offerUsd), reserveUsd: C.reserveUsd, heldBackForR180Usd: r2(holdBackR180), note: "idle cash the second layer may use tonight; its rule decides (registered at home)" },
+    r180: { want, wantNext: win.wantNext, targetUsd: cal.targetUsd }, checks,
     config: { exposureCap: C.exposureCap, countExitProceeds: C.countExitProceeds, r180YieldsToDips: C.r180YieldsToDips, stackerYields: C.stackerYields, entryPriority: C.entryPriority },
   };
 }
@@ -214,4 +242,4 @@ function main(argv, deps = {}) {
   } catch (e) { err("REFUSED: " + e.message); return 1; }
 }
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
-module.exports = { DIP, CAL, STACKER, r180Want, checkConfig, checkNightly, compose, main };
+module.exports = { DIP, CAL, STACKER, r180Want, r180Window, checkConfig, checkNightly, compose, main };
