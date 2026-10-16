@@ -1,0 +1,175 @@
+{
+ "spec": "capital-model-measured-cost-fixture-v1",
+ "first": "2018-06-01",
+ "last": "2026-10-09",
+ "alpha": 2.009,
+ "beta": 1.125,
+ "paths": {
+  "QQQ": {
+   "seed": 1001,
+   "volBp": 95,
+   "driftBp": 22,
+   "flipP": 0.012,
+   "start": 100
+  },
+  "SPY": {
+   "seed": 1002,
+   "volBp": 70,
+   "driftBp": 18,
+   "flipP": 0.011,
+   "start": 100
+  },
+  "GLD": {
+   "seed": 1003,
+   "volBp": 60,
+   "driftBp": 12,
+   "flipP": 0.01,
+   "start": 100
+  },
+  "EFA": {
+   "seed": 1004,
+   "volBp": 65,
+   "driftBp": 10,
+   "flipP": 0.013,
+   "start": 100
+  },
+  "DBMF": {
+   "seed": 1005,
+   "volBp": 45,
+   "driftBp": 8,
+   "flipP": 0.009,
+   "start": 100
+  },
+  "IEF": {
+   "seed": 1006,
+   "volBp": 35,
+   "driftBp": 5,
+   "flipP": 0.008,
+   "start": 100
+  },
+  "BTC": {
+   "seed": 2001,
+   "volBp": 320,
+   "driftBp": 48,
+   "flipP": 0.008,
+   "start": 1000
+  },
+  "ETH": {
+   "seed": 2002,
+   "volBp": 380,
+   "driftBp": 42,
+   "flipP": 0.009,
+   "start": 100
+  }
+ },
+ "tbillSeed": 777,
+ "znSeed": 3003,
+ "holeEvery": 300,
+ "septGrossWindow": 0.0071,
+ "septPrevClose": 110,
+ "shas": {
+  "inputs": "0c2301a3ae4681289f75f598a7c47c2fe9b04836d0662d19f914dbe455a45838",
+  "dtb3": "ce0cdfc31d136cb12920ccea1b09e66b586fa7beb1e5eb03dc29e0aeed04dce5",
+  "monthEnd": "ed0ad98d4bd6825a1edadd37f54a72fbf391283ab2b3d6208dfb6580bd5becb5",
+  "znDaily": "684b9470a2051677b937f6b934d8dca8b95f32fdc5ac8c9fe5c34bb591ea2d13"
+ },
+ "sessionCount": 2181,
+ "cryptoDays": 3053,
+ "known": {
+  "defaultStdoutSha": "cf913111d86153aacc25dd0567a032e92e525fc3611d61439969c7d6050f5612",
+  "defaultJsonSha": "9981b6941b7c15ab493f5f7de8332addd2449d8dc1a3dfebd6aea67059e635de",
+  "measuredBlockSha": "256468239fa1a0bdf2260615b2b745b5128f29c4602c3681ab119d9f9b4ca0b0",
+  "measuredBlockLines": 23,
+  "py": {
+   "E": 24.24,
+   "D2": 28.16,
+   "worstE": [
+    "2021-01",
+    -9.38
+   ],
+   "ddE": -22.2
+  },
+  "measured": {
+   "spec": "planE-measured-costs-v1",
+   "measuredAt": "2026-10-16",
+   "source": "SELFTEST — made up",
+   "equityBpsPerSide": 3.4,
+   "cryptoBpsPerRoundTrip": 38,
+   "znBpsPerRoundTrip": 6.5
+  },
+  "rows": {
+   "E/assumed/x1": [
+    24.24,
+    "2021-01",
+    -9.38,
+    -22.2
+   ],
+   "E/assumed/x1.5": [
+    22.67,
+    "2021-01",
+    -9.48,
+    -22.43
+   ],
+   "E/assumed/x2": [
+    21.12,
+    "2021-01",
+    -9.57,
+    -22.65
+   ],
+   "E/measured/x1": [
+    22.87,
+    "2021-01",
+    -9.48,
+    -22.46
+   ],
+   "E/measured/x1.5": [
+    20.65,
+    "2021-01",
+    -9.63,
+    -22.82
+   ],
+   "E/measured/x2": [
+    18.47,
+    "2021-01",
+    -9.77,
+    -23.75
+   ],
+   "D2/assumed/x1": [
+    28.16,
+    "2021-01",
+    -9.87,
+    -22.93
+   ],
+   "D2/assumed/x1.5": [
+    26.46,
+    "2021-01",
+    -9.97,
+    -23.15
+   ],
+   "D2/assumed/x2": [
+    24.79,
+    "2021-01",
+    -10.07,
+    -23.38
+   ],
+   "D2/measured/x1": [
+    26.8,
+    "2021-01",
+    -9.97,
+    -23.18
+   ],
+   "D2/measured/x1.5": [
+    24.45,
+    "2021-01",
+    -10.12,
+    -23.54
+   ],
+   "D2/measured/x2": [
+    22.14,
+    "2021-01",
+    -10.26,
+    -23.89
+   ]
+  }
+ }
+}

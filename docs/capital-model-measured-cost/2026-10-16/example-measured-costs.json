@@ -1,0 +1,9 @@
+{
+ "spec": "planE-measured-costs-v1",
+ "measuredAt": "2026-10-16",
+ "source": "EXAMPLE, NOT A MEASUREMENT — made-up numbers that show the shape of the file. Replace all three with fills measured at home before any run of this is quoted.",
+ "note": "equityBpsPerSide is charged once per trend flip (one side); cryptoBpsPerRoundTrip is halved and charged at each 50-day switch; znBpsPerRoundTrip replaces the 4 bps already taken off each stored month-end window.",
+ "equityBpsPerSide": 3.4,
+ "cryptoBpsPerRoundTrip": 38,
+ "znBpsPerRoundTrip": 6.5
+}
