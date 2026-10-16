@@ -17,16 +17,17 @@ const quiet = (s) => String(s).replace(/ALL/g, "all");
 const section = (title, fn) => { console.log(title); try { fn(); } catch (e) { ok(`${title}: the section ran to its end`, false, `threw: ${String(e.stack || e).split("\n").slice(0, 3).join(" ")}`); } };
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "bt-selftest-"));
 // the house null bar as an installed runner would find it: backend/lib/null-bar.js, else the research server's verbatim port (the clean copy has only the port)
+const { writeJsonAtomic: writeJsonAtomicT } = require(path.join(H, "aw.cjs")).loadAtomicWrite(REPO);
 const NB = B.loadNullBar([path.join(REPO, "backend", "lib", "null-bar.js"), path.join(REPO, "docs", "server", "wave6-agents", "server", "factory", "lib", "nullbar.cjs")]);
 
 // ── synthetic bars ───────────────────────────────────────────────────────────────────────────────────────────────────────
 function sessions(from, n) { const out = []; for (let t = Date.parse(from + "T12:00:00Z"); out.length < n; t += 86400000) { const g = new Date(t).getUTCDay(); if (g !== 0 && g !== 6) out.push(new Date(t).toISOString().slice(0, 10)); } return out; }
 /** a daily OHLC path; edge > 0 adds that drift to the day AFTER a close with IBS < 0.1 (the planted dip-buy edge); 0 = no edge */
-function synth(seed, n, edge = 0, from = "2010-01-04") {
+function synth(seed, n, edge = 0, from = "2010-01-04", drift = 0) {
   const rng = B.mulberry(seed), nrm = () => { let u = 0, v = 0; while (u === 0) u = rng(); v = rng(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
   const days = sessions(from, n), bars = []; let c = 100, lastIbs = 0.5;
   for (const t of days) {
-    const o = c * (1 + 0.002 * nrm()), r = 0.012 * nrm() + (lastIbs < 0.1 ? edge : 0), cl = c * (1 + r);
+    const o = c * (1 + 0.002 * nrm()), r = 0.012 * nrm() + drift + (lastIbs < 0.1 ? edge : 0), cl = c * (1 + r);
     const h = Math.max(o, cl) * (1 + Math.abs(0.005 * nrm())), l = Math.min(o, cl) * (1 - Math.abs(0.005 * nrm()));
     bars.push({ t, o, h, l, c: cl, v: 1000 }); lastIbs = h > l ? (cl - l) / (h - l) : 0.5; c = cl;
   }
@@ -67,7 +68,7 @@ section("known answer — hand-computed", () => {
   const want = [{ e: days[2], x: days[4], g: 103 / 100 - 1 }, { e: days[6], x: days[8], g: 49 / 50 - 1 }];
   ok("two closed trades at the hand-picked closes (entry 100 -> exit 103, entry 50 -> exit 49), gross exact", tr.length === 2 && tr.every((x, i) => x.entryDate === want[i].e && x.exitDate === want[i].x && Math.abs(x.gross - want[i].g) < 1e-12), JSON.stringify(tr.map((x) => [x.entryDate, x.exitDate, x.entry, x.exit, x.gross])));
   ok("the trade entered on bar 10 never exits: listed OPEN, not counted", r.open.length === 1 && r.open[0].entryDate === days[10]);
-  ok("net = gross - 0.06% exactly; both in January 2020: the month's mean is their mean", Math.abs(tr[0].net - 0.0294) < 1e-12 && Math.abs(tr[1].net - (-0.0206)) < 1e-12 && Math.abs(B.summarise(tr).meanNet - 0.0044) < 1e-12);
+  ok("net = gross - 0.06% exactly; both in January 2020: the month's mean is their mean", Math.abs(tr[0].net - 0.0294) < 1e-12 && Math.abs(tr[1].net - (-0.0206)) < 1e-12 && Math.abs(B.summarise(tr).meanNet - 0.0044) < 1e-12 && B.summarise(tr).months === 1);
   ok("Newey-West t, lag 1, on [1%, 2%, -0.5%, 1.5%] = 3.5777 (worked by hand: v = 8.75e-5 - 5.625e-5)", Math.abs(B.nwT([0.01, 0.02, -0.005, 0.015]) - 0.01 / Math.sqrt(3.125e-5 / 4)) < 1e-9 && Math.abs(B.nwT([0.01, 0.02, -0.005, 0.015]) - 3.5777) < 1e-4);
   const Rc = baseRule({ universe: ["ONE"], window: { from: "2020-01-01", to: "2020-12-31" }, params: { entry: { ibsBelow: 0.1 }, exit: { ibsAbove: 0.99 }, maxHoldDays: 2 } });
   const rc = B.simulateRule(B.prepRule(bars, Rc), "ONE", Rc);
@@ -79,10 +80,14 @@ section("known answer — hand-computed", () => {
 section("the bar — R313's known answer", () => {
   const b = B.barFor(320, { variants: 1, seed: 313, NB });
   ok(`barFor(n 320, 1 variant, seed 313): the NW-on-noise part is R313's registered 1.66 exactly (${b.nwSim})`, b.nwSim === 1.66, JSON.stringify(b));
-  // the null-bar part: R313's registry says 1.658 from backend/lib/null-bar.js. With the HOUSE file that must be reproduced exactly. The clean copy
-  // has only the research server's port, which gives 1.666 for the same call — a difference this package REPORTS (NOTES.md), never hides.
-  if (/backend[\\/]lib[\\/]null-bar\.js$/.test(NB.path)) ok(`with the house backend/lib/null-bar.js: null bar ${b.iid} = R313's registered 1.658, bar ${b.bar} = 1.66`, b.iid === 1.658 && b.bar === 1.66, JSON.stringify(b));
-  else { console.log(`  NOTE (not counted) the null bar loaded is the PORT ${path.relative(REPO, NB.path)}: n 320 seed 313 gives ${b.iid}, R313's registry says 1.658 from the house file — see NOTES.md (run this selftest at home, where the house file is loaded and this becomes a counted case)`); ok("the port's null bar is deterministic for the same call (seeded)", B.barFor(320, { variants: 1, seed: 313, NB, trialsNw: 10 }).iid === b.iid); }
+  // the null-bar part (checker cycle 1, D1): R313's registry value 1.658 came from an UNSEEDED nullBar call at registration (register-r310.js
+  // calls nullBar with no rng: Math.random); over 40 seeds the port's p95 at n 320 spans 1.608..1.674 (seed 313: 1.666). So 1.658 is not a
+  // seeded known answer and is not asserted. What IS asserted: the bar is max(NW part, null-bar part), and — at home, where both exist —
+  // the house backend/lib/null-bar.js and the server's port give the SAME value for the same seeded call.
+  ok("barFor's bar is max(its NW part, its null-bar part), rounded to 3 places", b.bar === Math.max(b.nwSim, b.iid));
+  const housePath = path.join(REPO, "backend", "lib", "null-bar.js"), portPath = path.join(REPO, "docs", "server", "wave6-agents", "server", "factory", "lib", "nullbar.cjs");
+  if (fs.existsSync(housePath)) { const hb = B.barFor(320, { variants: 1, seed: 313, trialsNw: 10, NB: B.loadNullBar([housePath]) }), pb = B.barFor(320, { variants: 1, seed: 313, trialsNw: 10, NB: B.loadNullBar([portPath]) }); ok(`the house null-bar.js and the server's port agree for the same seeded call (${hb.iid} / ${pb.iid})`, hb.iid === pb.iid); }
+  else { console.log(`  NOTE (not counted) backend/lib/null-bar.js is not in this copy: the house-vs-port equality is checked at home (the port gives ${b.iid} for n 320, seed 313)`); ok("the port's null bar is deterministic for the same call (seeded)", B.barFor(320, { variants: 1, seed: 313, NB, trialsNw: 10 }).iid === b.iid); }
   const b5 = B.barFor(120, { variants: 5, seed: 7, trialsNw: 3000, trialsIid: 3000, NB }), b1 = B.barFor(120, { variants: 1, seed: 7, trialsNw: 3000, trialsIid: 3000, NB });
   ok(`best of 5 variants raises the bar (${b5.bar} > ${b1.bar}), and the same inputs give the same bar (seeded)`, b5.bar > b1.bar && B.barFor(120, { variants: 5, seed: 7, trialsNw: 3000, trialsIid: 3000, NB }).bar === b5.bar);
 });
@@ -95,6 +100,15 @@ section("PLANTED EDGE — must PASS", () => {
   ok("its controls: leak test t < 2 on both drift-free shuffles; positive control t >= 3; 2x cost still > 0", r.leakTest.every((x) => x.pass) && r.positiveControl.pass && r.stats.stress.meanNet > 0, JSON.stringify([r.leakTest, r.positiveControl]));
   const r2 = RUN.run(baseRule({ costs: { roundTrip: 0.0016, stress: 0.0032 } }), dir, { NB });
   ok("costs: +0.10% round trip lowers every trade's net by exactly 0.001 and the monthly mean by exactly 0.001", r2.trades.length === r.trades.length && r2.trades.every((x, i) => Math.abs((r.trades[i].net - x.net) - 0.001) < 1e-12) && Math.abs((r.stats.meanNet - r2.stats.meanNet) - 0.001) < 1e-12);
+  ok("the calibration (R313): the whole rule on the 10 drift-kept scrambles passes none of them; the floor has all 10 seeds", r.calibration.calibrated === true && r.calibration.passes === 0 && r.calibration.driftKeptSeeds === 10 && r.floor.seeds === 10, JSON.stringify(r.calibration));
+  ok("open trades are listed, never counted: stats.trades equals the closed trades, none of which lacks an exit", r.stats.trades === r.trades.length && r.trades.every((x) => x.exitDate) && Array.isArray(r.open));
+  ok("the 2x-cost mean is exactly the mean less (stress - roundTrip)", Math.abs(r.stats.stress.meanNet - (r.stats.meanNet - 0.0006)) < 1e-12);
+  const rb = RUN.run(baseRule({ bar: { tRequired: 99, source: "fixture" } }), dir, { NB });
+  ok("a registered rule's bar is used AS GIVEN (99, never recomputed): the same edge then DID NOT PASS on the t gate (and the timing gates)", rb.bar.tRequired === 99 && rb.bar.computed === false && rb.verdict === "DID NOT PASS" && rb.failed.includes("tAtLeastBar"), JSON.stringify([rb.bar, rb.failed]));
+  const rw2 = RUN.run(baseRule({ window: { from: "2012-01-01", to: "2017-12-31" } }), dir, { NB });
+  ok("window.from moves the first entry (no entry before 2012-01-01; fewer trades than from 2010)", rw2.trades.every((x) => x.entryDate >= "2012-01-01") && rw2.trades.length < r.trades.length && Object.values(rw2.perSymbol).every((p) => p.entryFrom === "2012-01-01"));
+  const rc2 = RUN.run(baseRule({ costs: { roundTrip: 0.0016, stress: 0.0032 } }), dir, { NB });
+  ok("the placebo trades carry the same cost: +0.10% round trip shifts the placebo's median by exactly 0.10%/month", Math.abs((r.placebo.p50PctPerMonth - rc2.placebo.p50PctPerMonth) - 0.1) < 0.0002, `${r.placebo.p50PctPerMonth} ${rc2.placebo.p50PctPerMonth}`);
   const r3 = RUN.run(baseRule(), dir, { NB });
   ok("deterministic: the same rule over the same bars gives the same trades, statistics and placebo", JSON.stringify(r3.stats) === JSON.stringify(r.stats) && JSON.stringify(r3.placebo) === JSON.stringify(r.placebo) && r3.data.setSha256 === r.data.setSha256);
 });
@@ -107,12 +121,29 @@ section("NO EDGE — must NOT pass", () => {
   }
   console.log("  info " + verdicts.join(" | "));
   ok(`three no-edge universes (random walks, same shape): none passes — ${verdicts.join(" | ")}`, verdicts.every((v) => !/^PASS/.test(v)));
+  // DRIFT-KEPT no edge (checker cycle 1): a steady up-drift makes the dip-buy's mean and t large, but its TIMING adds nothing — the
+  // placebo and the drift-kept floor must say so
+  const dk = path.join(TMP, "drift"); SYMS.forEach((s, i) => writeBars(dk, s, synth(700 + i, N, 0, "2010-01-04", 0.0012)));
+  const rd = RUN.run(baseRule(), dk, { NB });
+  ok(`a drift-kept no-edge universe (+0.12%/day drift, no bounce): t ${rd.stats.tNet} clears the bar, mean > 0 — yet NOT PASS: the placebo gate and the drift-kept floor fail (${rd.failed.join(", ")})`, rd.stats.tNetRaw >= 1.66 && rd.stats.meanNet > 0 && rd.verdict === "DID NOT PASS" && rd.failed.includes("correctedPlaceboPairedTAtLeastBar") && (rd.failed.includes("floorMeanAboveP95") || rd.failed.includes("floorTVsP50AtLeastBar")), JSON.stringify([rd.verdict, rd.failed, rd.stats.tNet, rd.placebo.pairedT]));
+  // the calibration HOLDS a read: with a bar no scramble can miss (-100) and a 0% limit, drift-kept scrambles "pass" -> HELD, not PASS
+  const rh = RUN.run(baseRule({ bar: { tRequired: -100, source: "fixture: a bar nothing misses" }, controls: { placeboDraws: 100, placeboSeed: 313, floorSeeds: 10, leakSeeds: [1, 2], maxWholeRuleFalsePass: 0 } }), dk, { NB });
+  ok(`the calibration holds a read: drift-kept scrambles pass a bar of -100 (${rh.calibration.passes} of ${rh.calibration.driftKeptSeeds}, limit 0%) -> HELD, its rule verdict kept beside it`, rh.calibration.calibrated === false && rh.calibration.passes > 0 && /^HELD — /.test(rh.verdict) && typeof rh.ruleVerdict === "string", JSON.stringify([rh.verdict, rh.calibration]));
+  // the leak test on a scramble whose t cannot be measured (fewer than 3 months): it FAILS -> CANNOT MEASURE
+  const rn = RUN.run(baseRule({ universe: ["AAA", "BBB"], window: { from: "2010-01-01", to: "2010-02-26" }, gates: { minTrades: 1, minMonths: 3 } }), path.join(TMP, "edge"), { NB });
+  ok("a leak scramble with no measurable t (2 months): the leak test FAILS and the verdict is CANNOT MEASURE", rn.leakTest.some((l) => l.tNW == null) && rn.leakTest.filter((l) => l.tNW == null).every((l) => l.pass === false) && /^CANNOT MEASURE/.test(rn.verdict) && rn.failed.includes("leakTestPassed"), JSON.stringify([rn.leakTest, rn.verdict]));
+  // decideRule gate by gate: with everything else passing, each gate alone turns PASS into DID NOT PASS (or CANNOT MEASURE for its own conditions)
+  const good = { trades: 500, months: 100, meanNet: 0.01, tNW: 5, halfFirst: 0.01, halfSecond: 0.01, meanNet2x: 0.005, placeboPairedT: 4, floorMeanAboveP95: true, floorTVsP50AtLeastBar: true, leakPass: true, positivePass: true, bar: 1.66, minTrades: 100, minMonths: 36 };
+  const flips = { tradesAtLeastMin: { trades: 50 }, monthsAtLeastMin: { months: 20 }, meanNetPositive: { meanNet: -0.001 }, tAtLeastBar: { tNW: 1.5 }, correctedPlaceboPairedTAtLeastBar: { placeboPairedT: 1.65 }, floorMeanAboveP95: { floorMeanAboveP95: false }, floorTVsP50AtLeastBar: { floorTVsP50AtLeastBar: false }, bothHalvesPositive: { halfSecond: -0.001 }, cost2xMeanPositive: { meanNet2x: -0.0001 }, leakTestPassed: { leakPass: false }, positiveControlPassed: { positivePass: false } };
+  const cm = ["tradesAtLeastMin", "monthsAtLeastMin", "leakTestPassed", "positiveControlPassed"];
+  ok("decideRule: all gates true -> PASS; each of the 11 gates false alone -> DID NOT PASS naming it (CANNOT MEASURE for trades, months, leak test, positive control)", B.decideRule(good).verdict === "PASS" && Object.entries(flips).every(([g, o]) => { const v = B.decideRule({ ...good, ...o }); return v.failed.join() === g && (cm.includes(g) ? /^CANNOT MEASURE/.test(v.verdict) : v.verdict === "DID NOT PASS"); }));
+  ok("the positive control's verdict is its own t >= 3; the leak test's is t < 2 with an unmeasured (null) t FAILING (R313)", [rd].every((x) => x.positiveControl.pass === (x.positiveControl.tNW != null && x.positiveControl.tNW >= 3) && x.leakTest.every((l) => l.pass === (l.tNW != null && l.tNW < 2))));
   // a planted edge too weak to clear the bar does not pass either
   const dir = path.join(TMP, "weak"); SYMS.slice(0, 3).forEach((s, i) => writeBars(dir, s, synth(500 + i, 3 * 261, 0.0005)));
   const rw = RUN.run(baseRule({ universe: SYMS.slice(0, 3), window: { from: "2010-01-01", to: "2012-12-31" } }), dir, { NB });
   ok(`a tiny edge on 3 symbols x 3 years: not PASS (${rw.verdict})`, !/^PASS/.test(rw.verdict));
   const rf = RUN.run(baseRule({ universe: ["AAA"], window: { from: "2010-01-01", to: "2010-06-30" } }), path.join(TMP, "edge"), { NB });
-  ok(`too few trades / months: CANNOT MEASURE (${rf.verdict})`, /^CANNOT MEASURE — \d+ trades < 100; \d+ months < 36/.test(rf.verdict));
+  ok(`too few trades / months: CANNOT MEASURE (${rf.verdict}); a leak scramble with no measurable t FAILS it`, /^CANNOT MEASURE — \d+ trades < 100; \d+ months < 36/.test(rf.verdict) && rf.leakTest.every((l) => l.tNW != null || l.pass === false));
 });
 
 section("refusals — bars and rules", () => {
@@ -120,6 +151,9 @@ section("refusals — bars and rules", () => {
   const refuse = (sym, bars, re) => { writeBars(dir, sym, bars); let e = null; try { B.loadBars(dir, sym); } catch (x) { e = x.message; } return re.test(e || ""); };
   ok("a missing bar file: REFUSED", (() => { try { B.loadBars(dir, "NOPE"); return false; } catch (e) { return /no bar file/.test(e.message); } })());
   ok("high < low, a price <= 0 or NaN, a duplicate date, dates out of order, a malformed date: each REFUSED", refuse("HL", good.map((b, i) => (i === 50 ? { ...b, h: b.l - 1 } : b)), /high .* < low/) && refuse("NEG", good.map((b, i) => (i === 7 ? { ...b, c: -1 } : b)), /finite number > 0/) && refuse("NAN", good.map((b, i) => (i === 7 ? { ...b, o: "x" } : b)), /finite number > 0/) && refuse("DUP", [...good.slice(0, 10), good[9], ...good.slice(10)], /strictly increase/) && refuse("ORD", [good[1], good[0], ...good.slice(2)], /strictly increase/) && refuse("BADD", good.map((b, i) => (i === 3 ? { ...b, t: "2010-13-45" } : b)), /bad date/));
+  ok("an open or close outside [low, high], and an impossible date (2010-02-30): each REFUSED", refuse("OUT", good.map((b, i) => (i === 9 ? { ...b, c: b.h * 1.01 } : b)), /outside \[low, high\]/) && refuse("FEB", good.map((b, i) => (i === 3 ? { ...b, t: "2010-02-30" } : b)), /bad date/));
+  writeBars(dir, "LAST", good);
+  ok("window.lastBar (the forming-bar guard): bars after it are dropped and counted; a file that ends before the window's end is REFUSED (coverage)", (() => { const L = B.loadBars(dir, "LAST", { lastBar: good[200].t }); return L.bars.length === 201 && L.afterLastDropped === 99; })() && (() => { try { B.loadBars(dir, "LAST", { coverTo: "2015-12-31" }); return false; } catch (e) { return /coverage/.test(e.message); } })());
   writeBars(dir, "WKD", [...good.slice(0, 5), { ...good[5], t: "2010-01-09" }, ...good.slice(6)].filter((b, i) => i !== 6 || true));
   ok("a weekend row is dropped and counted (as R313 did), not traded", (() => { const L = B.loadBars(dir, "WKD"); return L.weekendDropped === 1 && !L.bars.some((b) => b.t === "2010-01-09"); })());
   fs.writeFileSync(path.join(dir, "CSV.csv"), "Date,Open,High,Low,Close,Volume\n" + good.slice(0, 20).map((b) => [b.t, b.o, b.h, b.l, b.c, b.v].join(",")).join("\n") + "\n");
@@ -130,6 +164,8 @@ section("refusals — bars and rules", () => {
   ok("a rule with no registration: REFUSED unless --exploratory", /--exploratory/.test(e1 || ""), e1);
   const rx = RUN.run(baseRule({ registration: undefined, bar: { variants: 1, trialsNw: 2000, trialsIid: 2000 } }), path.join(TMP, "edge"), { exploratory: true, NB });
   ok("--exploratory: runs, the bar is COMPUTED (best of 1), and the verdict and label say EXPLORATORY", rx.mode === "exploratory" && /^EXPLORATORY: /.test(rx.verdict) && /never a read/.test(rx.label) && rx.bar.computed === true && rx.bar.n === rx.stats.months, `${rx.verdict} ${JSON.stringify(rx.bar).slice(0, 200)}`);
+  let er = null; try { RUN.run(baseRule({ registration: undefined, reservedForRegistration: true }), path.join(TMP, "edge"), { exploratory: true, NB }); } catch (x) { er = x.message; }
+  ok("a rule RESERVED FOR REGISTRATION: an exploratory run is REFUSED (its bars are not read before it is registered)", /RESERVED FOR REGISTRATION/.test(er || ""), er);
   let e2 = null; try { RUN.run(baseRule({ bar: { variants: 1 } }), path.join(TMP, "edge"), { NB }); } catch (x) { e2 = x.message; }
   ok("a registered rule without its registered bar.tRequired: REFUSED (a registered bar is never recomputed)", /registered bar\.tRequired/.test(e2 || ""), e2);
 });
@@ -158,12 +194,19 @@ section("the CLI end to end (temp tree: sealed once, read-only, verified, tamper
   const tam = path.join(TMP, "results", "tampered.json"), jt = JSON.parse(JSON.stringify(j)); jt.stats.tNet = 9.99; fs.writeFileSync(tam, JSON.stringify(jt));
   const vt = cli("--verify", tam);
   ok("a sealed file with one number changed: --verify ALTERED (exit 1)", vt.status === 1 && /ALTERED/.test(vt.stderr), vt.stderr);
+  const tamper = (mut, name) => { const f = path.join(TMP, "results", name + ".json"), x = JSON.parse(JSON.stringify(j)); mut(x); fs.writeFileSync(f, JSON.stringify(x)); return cli("--verify", f).status; };
+  ok("the seal covers the trades and the rule too: one trade's net changed, or the rule's universe, -> ALTERED", tamper((x) => { x.trades[0].net += 0.001; }, "t1") === 1 && tamper((x) => { x.rule.universe[0] = "ZZZ"; }, "t2") === 1 && tamper((x) => { x.bar.tRequired = 1; }, "t3") === 1);
+  const raceOut = path.join(TMP, "results", "race.json"); let er2 = null;
+  try { RUN.writeSealed(raceOut, j, (f, o) => { writeJsonAtomicT(f, o); fs.writeFileSync(raceOut, "someone else's file"); }); } catch (x) { er2 = x.message; }
+  ok("write once with no race: a file that appears between the check and the write is NOT replaced (link fails), and no temp is left", /never overwritten/.test(er2 || "") && fs.readFileSync(raceOut, "utf8") === "someone else's file" && !fs.readdirSync(path.join(TMP, "results")).some((f) => /sealing/.test(f)), er2);
+  ok("argument errors: --verify with no path, a flag given twice, a flag whose value is another flag -> exit 2", cli("--verify").status === 2 && cli("--rule", ruleF, "--rule", ruleF, "--bars", "x", "--out", "y").status === 2 && cli("--rule", ruleF, "--bars", path.join(TMP, "edge"), "--out", "--exploratory").status === 2);
   const unreg = path.join(TMP, "unreg.json"); fs.writeFileSync(unreg, JSON.stringify(baseRule({ registration: undefined })));
   const ru = cli("--rule", unreg, "--bars", path.join(TMP, "edge"), "--out", path.join(TMP, "results", "x.json"));
   ok("an unregistered rule without --exploratory: REFUSED, nothing written", ru.status === 1 && /--exploratory/.test(ru.stderr) && !fs.existsSync(path.join(TMP, "results", "x.json")), ru.stderr);
   const bad = cli("--rule", ruleF, "--bars", path.join(TMP, "edge"));
   ok("usage errors: exit 2", bad.status === 2 && cli("--nonsense").status === 2);
   const shipped = JSON.parse(fs.readFileSync(path.join(BT, "rules", "dip-ibs-country-etfs.json"), "utf8"));
+  ok("the FIRST-USE rule file is RESERVED FOR REGISTRATION (no exploratory read of its bars) and has the forming-bar guard", shipped.reservedForRegistration === true && shipped.window.lastBar === "2026-10-01");
   ok("the FIRST-USE rule file (R313's IBS rule on 24 single-country ETFs) passes checkRule, carries NO registration (a draft) and none of R313's 20 symbols", B.checkRule(shipped) === shipped && !shipped.registration && shipped.universe.length === 24 && !shipped.universe.some((s) => ["SPY", "IWM", "DIA", "MDY", "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLU", "XLB", "EFA", "EEM", "EWJ", "EWG", "EWU", "EWC", "EWA", "QQQ"].includes(s)) && shipped.params.entry.ibsBelow === 0.1 && shipped.params.exit.ibsAbove === 0.9);
   const mr = cp.spawnSync(process.execPath, [path.join(H, "make-rules.cjs"), "--check"], { encoding: "utf8" });
   ok("the shipped rule file is exactly what make-rules.cjs writes (JSON written only through writeJsonAtomic)", mr.status === 0, mr.stdout);

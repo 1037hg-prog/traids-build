@@ -23,7 +23,7 @@
  *
  * THE SEALED FILE: schema bt-result-v1 — the rule (embedded, with its sha256), the sha256 of every bar file and of the set, the sha256 of this
  * runner's code and of the null bar used, every trade, the statistics, the controls, the gates, the verdict; seal.sha256 = sha256 of the
- * canonical JSON (sorted keys) of everything else. Written once (an existing file is REFUSED, never overwritten), through
+ * canonical JSON (sorted keys) of everything else — it detects an accidental or naive edit; it is NOT a signature (anyone can re-seal). Written once (an existing file is REFUSED, never overwritten), through
  * backend/lib/atomic-write.js, then made read-only (0444).
  * Exit 0 written (whatever the verdict) · 1 refused (rule, bars, existing output) · 2 usage.
  */
@@ -33,7 +33,8 @@ const B = require("./bt-core.cjs");
 const { fin, r4, r3, mean, nwT, summarise, strip, nearestRank, scramble, placeboPrepC, placeboRunC, pairedDiffs, floorGate, sha256 } = B;
 
 /** canonical JSON: keys sorted at every level (the seal is over these bytes) */
-const canon = (x) => (Array.isArray(x) ? `[${x.map(canon).join(",")}]` : x && typeof x === "object" ? `{${Object.keys(x).sort().map((k) => `${JSON.stringify(k)}:${canon(x[k])}`).join(",")}}` : JSON.stringify(x === undefined ? null : x));
+const canon = (x) => (Array.isArray(x) ? `[${x.map(canon).join(",")}]` : x && typeof x === "object" ? `{${Object.keys(x).filter((k) => x[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canon(x[k])}`).join(",")}}` : JSON.stringify(x === undefined ? null : x));
+const pct = (x) => (x == null || !fin(x) ? null : r4(100 * x));
 const sealOf = (body) => sha256(Buffer.from(canon(body), "utf8"));
 
 /** the rule over loaded bars -> trades + statistics for one set of bars (real or scrambled) */
@@ -55,12 +56,13 @@ function runRule(R, barsBy) {
 function run(rule, barsDir, opts = {}) {
   const R = B.checkRule(rule);
   const mode = R.registration ? "registered" : opts.exploratory ? "exploratory" : null;
+  if (mode === "exploratory" && R.reservedForRegistration) throw new Error("this rule is RESERVED FOR REGISTRATION (reservedForRegistration: true): its universe's bars must not be read before the test is registered at home — no exploratory run");
   if (!mode) throw new Error("the rule carries no `registration` (it is not a registered test): run it with --exploratory, and its result is labelled EXPLORATORY — never a read");
   if (R.registration && !(typeof R.registration.id === "string" && /^\d{4}-\d{2}-\d{2}$/.test(R.registration.registeredOn || "") && fin(R.bar.tRequired)))
     throw new Error("a registered rule needs registration.id, registration.registeredOn (YYYY-MM-DD) and its registered bar.tRequired");
   // data
   const files = {}, barsBy = {};
-  for (const s of R.universe) { const L = B.loadBars(barsDir, s); barsBy[s] = L.bars; files[s] = { file: L.file, sha256: L.sha, bars: L.bars.length, first: L.bars[0].t, last: L.bars[L.bars.length - 1].t, weekendRowsDropped: L.weekendDropped }; }
+  for (const s of R.universe) { const L = B.loadBars(barsDir, s, { lastBar: R.window.lastBar || null, coverTo: R.window.to }); barsBy[s] = L.bars; files[s] = { file: L.file, sha256: L.sha, bars: L.bars.length, first: L.bars[0].t, last: L.bars[L.bars.length - 1].t, weekendRowsDropped: L.weekendDropped, afterLastBarDropped: L.afterLastDropped }; }
   const dataSha = sha256(Buffer.from(Object.keys(files).sort().map((s) => `${files[s].sha256}  ${s}`).join("\n") + "\n"));
   // the real run
   const { PS, tr, open, perSymbol } = runRule(R, barsBy);
@@ -68,23 +70,40 @@ function run(rule, barsDir, opts = {}) {
   // bar
   const NB = opts.NB || B.loadNullBar();
   const bar = fin(R.bar.tRequired) ? { tRequired: R.bar.tRequired, source: R.bar.source || "the rule's registered bar (used as given)", computed: false }
-    : (() => { const b = B.barFor(R.bar.n || Math.max(S.months, 3), { variants: R.bar.variants, seed: R.bar.seed || 313, trialsNw: R.bar.trialsNw || 50000, trialsIid: R.bar.trialsIid || 20000, NB }); return { tRequired: b.bar, computed: true, ...b, source: `barFor: max(NW lag-1 t on noise p95, null-bar p95), best of ${b.variants}, n ${b.n}, seed ${b.seed}` }; })();
+    : (() => { const b = B.barFor(R.bar.n ?? Math.max(S.months, 3), { variants: R.bar.variants, seed: R.bar.seed ?? 313, trialsNw: R.bar.trialsNw ?? 50000, trialsIid: R.bar.trialsIid ?? 20000, NB }); return { tRequired: b.bar, computed: true, ...b, source: `barFor: max(NW lag-1 t on noise p95, null-bar p95), best of ${b.variants}, n ${b.n}, seed ${b.seed}` }; })();
   const t = bar.tRequired;
   // placebo
   const C = R.controls;
   const pl = tr.length ? placeboRunC(placeboPrepC(tr, PS), PS, { draws: C.placeboDraws, seed: C.placeboSeed, cost: R.costs.roundTrip }) : null;
   const dC = pl ? pairedDiffs(S, pl) : [], placeboPairedT = nwT(dC);
-  // drift-kept floor
-  const floorMeans = [];
-  for (let seed = 1; seed <= C.floorSeeds; seed++) { const sb = {}; for (const s of R.universe) sb[s] = scramble(barsBy[s], seed, s, false); const x = runRule(R, sb); const m = summarise(x.tr).meanNet; if (fin(m)) floorMeans.push(m); }
-  const fs_ = floorMeans.slice().sort((a, b) => a - b), floor = { seeds: fs_.length, p50: nearestRank(fs_, 0.5), p95: nearestRank(fs_, 0.95) };
+  // drift-kept scrambles: the floor, and (R313's calibration) the WHOLE decision rule's false-pass rate on them
+  const kept = [];
+  for (let seed = 1; seed <= C.floorSeeds; seed++) {
+    const sb = {}; for (const s of R.universe) sb[s] = scramble(barsBy[s], seed, s, false);
+    const x = runRule(R, sb), Sx = summarise(x.tr), S2x = summarise(x.tr, { netOf: (y) => y.gross - R.costs.stress });
+    const plx = x.tr.length ? placeboRunC(placeboPrepC(x.tr, x.PS), x.PS, { draws: C.placeboDraws, seed: C.placeboSeed, cost: R.costs.roundTrip }) : null;
+    kept.push({ seed, S: Sx, S2: S2x, placeboPairedT: plx ? nwT(pairedDiffs(Sx, plx)) : null });
+  }
+  const floorOf = (rows) => { const v = rows.map((r) => r.S.meanNet).filter(fin).sort((a, b) => a - b); return { seeds: v.length, p50: nearestRank(v, 0.5), p95: nearestRank(v, 0.95) }; };
+  const floor = floorOf(kept), floorComplete = floor.seeds === C.floorSeeds;
   const fg = floorGate(S, floor, t);
+  // each drift-kept scramble judged by the full rule against the floor of the OTHER seeds (leave-one-out; leak + positive control taken as passed)
+  const judged = kept.map((r, j) => { const fl = floorOf(kept.filter((_, i) => i !== j)), g = floorGate(r.S, fl, t);
+    return B.decideRule({ trades: r.S.trades, months: r.S.months, meanNet: r.S.meanNet, tNW: r.S.tNetRaw, halfFirst: r.S.halves && r.S.halves.first.meanNet, halfSecond: r.S.halves && r.S.halves.second.meanNet,
+      meanNet2x: r.S2.meanNet, placeboPairedT: r.placeboPairedT, floorMeanAboveP95: g.meanAboveP95, floorTVsP50AtLeastBar: g.tVsP50AtLeastBar, leakPass: true, positivePass: true, bar: t, minTrades: R.gates.minTrades, minMonths: R.gates.minMonths }).verdict; });
+  const maxFP = fin(C.maxWholeRuleFalsePass) ? C.maxWholeRuleFalsePass : 0.05, falsePass = judged.length ? judged.filter((v) => v === "PASS").length / judged.length : null;
+  const calibration = { driftKeptSeeds: judged.length, passes: judged.filter((v) => v === "PASS").length, falsePass, limit: maxFP, calibrated: falsePass != null && falsePass <= maxFP && floorComplete,
+    note: "R313's design: the full decision rule on the drift-kept scrambles (no timing edge by construction), each against the floor of the other seeds; above the limit the read is HELD" };
   // leak test (drift-free shuffles) and positive control (own winners)
-  const leak = C.leakSeeds.map((seed) => { const sb = {}; for (const s of R.universe) sb[s] = scramble(barsBy[s], seed, s, true); const x = summarise(runRule(R, sb).tr); return { seed, trades: x.trades, months: x.months, tNW: r4(x.tNetRaw), pass: !(x.tNetRaw != null && x.tNetRaw >= 2) }; });
+  const leak = C.leakSeeds.map((seed) => { const sb = {}; for (const s of R.universe) sb[s] = scramble(barsBy[s], seed, s, true); const x = summarise(runRule(R, sb).tr); return { seed, trades: x.trades, months: x.months, tNW: r4(x.tNetRaw), pass: x.tNetRaw != null && x.tNetRaw < 2 }; });   // R313: an unmeasured t (null) FAILS the leak test
   const pos = summarise(tr.filter((x) => x.net > 0)), positive = { trades: pos.trades, months: pos.months, tNW: r4(pos.tNetRaw), pass: pos.tNetRaw != null && pos.tNetRaw >= 3 };
   const J = B.decideRule({ trades: S.trades, months: S.months, meanNet: S.meanNet, tNW: S.tNetRaw, halfFirst: S.halves && S.halves.first.meanNet, halfSecond: S.halves && S.halves.second.meanNet,
     meanNet2x: S2.meanNet, placeboPairedT, floorMeanAboveP95: fg.meanAboveP95, floorTVsP50AtLeastBar: fg.tVsP50AtLeastBar, leakPass: leak.every((x) => x.pass), positivePass: positive.pass,
     bar: t, minTrades: R.gates.minTrades, minMonths: R.gates.minMonths });
+  // the verdict: CANNOT MEASURE first (the rule's own), then a HELD read when the floor is incomplete or the calibration is over its limit
+  let verdict = J.verdict;
+  if (!/^CANNOT MEASURE/.test(verdict) && !floorComplete) verdict = `CANNOT MEASURE — the drift-kept floor has ${floor.seeds} usable seeds of ${C.floorSeeds}`;
+  else if (!/^CANNOT MEASURE/.test(verdict) && !calibration.calibrated) verdict = `HELD — the whole rule passes ${calibration.passes} of ${calibration.driftKeptSeeds} drift-kept no-edge scrambles (${(100 * falsePass).toFixed(1)}% > ${100 * maxFP}%): its verdict (${J.verdict}) is not a read until the registry amends it`;
   const codeFiles = ["bt-core.cjs", "bt-run.cjs"].map((f) => [f, sha256(fs.readFileSync(path.join(__dirname, f)))]);
   return {
     schema: "bt-result-v1", mode, label: mode === "exploratory" ? "EXPLORATORY — not a registered test; this result is never a read" : `registered test ${R.registration.id} (registered ${R.registration.registeredOn})`,
@@ -95,10 +114,11 @@ function run(rule, barsDir, opts = {}) {
     stats: { ...strip(S), meanNetPctPerMonth: S.meanNetPctPerMonth, monthly: S._keys ? S._keys.map((k, i) => [k, r4(100 * S._series[i])]) : [], stress: { roundTrip: R.costs.stress, meanNetPctPerMonth: S2.meanNetPctPerMonth, meanNet: S2.meanNet } },
     costs: R.costs,
     placebo: pl ? { draws: pl.draws, seed: pl.seed, months: pl.months, pairedT: r4(placeboPairedT), pairedTRaw: placeboPairedT, pairedMeanDiffPctPerMonth: dC.length ? r4(100 * mean(dC)) : null,
-      p05PctPerMonth: r4(100 * pl.p05), p50PctPerMonth: r4(100 * pl.p50), p95PctPerMonth: r4(100 * pl.p95), widenedPerDraw: r3(pl.widenedPerDraw), droppedPerDraw: r3(pl.droppedPerDraw) } : null,
-    floor: { ...floor, p50PctPerMonth: r4(100 * floor.p50), p95PctPerMonth: r4(100 * floor.p95), gate: { meanAboveP95: fg.meanAboveP95, tVsP50: fg.tVsP50, clears: fg.clears } },
+      p05PctPerMonth: pct(pl.p05), p50PctPerMonth: pct(pl.p50), p95PctPerMonth: pct(pl.p95), widenedPerDraw: r3(pl.widenedPerDraw), droppedPerDraw: r3(pl.droppedPerDraw) } : null,
+    floor: { ...floor, wanted: C.floorSeeds, p50PctPerMonth: pct(floor.p50), p95PctPerMonth: pct(floor.p95), gate: { meanAboveP95: fg.meanAboveP95, tVsP50: fg.tVsP50, clears: fg.clears } },
+    calibration, ruleVerdict: J.verdict,
     leakTest: leak, positiveControl: positive,
-    gates: J.gates, failed: J.failed, verdict: (mode === "exploratory" ? "EXPLORATORY: " : "") + J.verdict,
+    gates: J.gates, failed: J.failed, verdict: (mode === "exploratory" ? "EXPLORATORY: " : "") + verdict,
     perSymbol, trades: tr.map((x) => ({ sym: x.sym, entryDate: x.entryDate, exitDate: x.exitDate, entry: x.entry, exit: x.exit, hold: x.hold, month: x.month, gross: x.gross, net: x.net, ...(x.capped ? { capped: true } : {}) })),
     open: open.map((x) => ({ sym: x.sym, entryDate: x.entryDate, entry: x.entry, markDate: x.markDate, mark: x.mark })),
   };
@@ -114,8 +134,13 @@ function verify(obj) {
 /** write once: refuse an existing file; atomic; then read-only */
 function writeSealed(out, sealed, writeJson) {
   if (fs.existsSync(out)) throw new Error(`${out} exists — a sealed result is never overwritten (choose a new --out)`);
-  writeJson(out, sealed);
-  fs.chmodSync(out, 0o444);
+  // written in full beside it (atomic-write), then LINKED to its name: link() fails if the name exists, so a file that appeared meanwhile is
+  // never replaced (no exists-then-rename race)
+  const tmp = `${out}.sealing-${process.pid}`;
+  writeJson(tmp, sealed);
+  try { fs.chmodSync(tmp, 0o444); fs.linkSync(tmp, out); }
+  catch (e) { if (e.code === "EEXIST") throw new Error(`${out} exists — a sealed result is never overwritten (choose a new --out)`); throw e; }
+  finally { fs.rmSync(tmp, { force: true }); }
   const back = JSON.parse(fs.readFileSync(out, "utf8")), v = verify(back);
   if (!v.ok) throw new Error(`written but does not verify: ${v.why}`);
 }
@@ -124,7 +149,12 @@ function main(argv, deps = {}) {
   const log = deps.log || console.log, err = deps.err || console.error, a = argv.slice();
   const opt = (k) => { const i = a.indexOf(k); return i >= 0 ? a[i + 1] : undefined; };
   const known = new Set(["--rule", "--bars", "--out", "--exploratory", "--verify"]);
-  for (let i = 0; i < a.length; i++) { if (!known.has(a[i])) { err(`bt-run: unknown argument ${JSON.stringify(a[i])}`); return 2; } if (a[i] !== "--exploratory") i++; }
+  const seen = new Set();
+  for (let i = 0; i < a.length; i++) {
+    if (!known.has(a[i])) { err(`bt-run: unknown argument ${JSON.stringify(a[i])}`); return 2; }
+    if (seen.has(a[i])) { err(`bt-run: ${a[i]} given twice`); return 2; } seen.add(a[i]);
+    if (a[i] !== "--exploratory") { if (a[i + 1] == null || a[i + 1].startsWith("--")) { err(`bt-run: ${a[i]} needs a value`); return 2; } i++; }
+  }
   if (a.includes("--verify")) {
     let o; try { o = JSON.parse(fs.readFileSync(opt("--verify"), "utf8")); } catch (e) { err(`REFUSED: ${e.message}`); return 1; }
     const v = verify(o); if (v.ok) { log(`INTACT: ${o.label}; verdict ${o.verdict}; seal ${o.seal.sha256.slice(0, 16)}`); return 0; } err(`ALTERED: ${v.why}`); return 1;

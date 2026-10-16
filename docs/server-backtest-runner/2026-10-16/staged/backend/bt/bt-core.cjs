@@ -129,7 +129,7 @@ const isWeekend = (d) => { const g = new Date(String(d).slice(0, 10) + "T12:00:0
  * date,open,high,low,close[,volume]) -> { bars: [{ t, o, h, l, c, v }], sha, file, weekendDropped }; THROWS on anything it cannot trust:
  * absent, unparseable, a price not finite and > 0, high < low, dates not strictly increasing (a duplicate included), a malformed date.
  */
-function loadBars(dir, sym) {
+function loadBars(dir, sym, { lastBar = null, coverTo = null } = {}) {
   if (!/^[A-Z0-9.\-]{1,12}$/.test(sym)) throw new Error(`bad symbol ${JSON.stringify(sym)}`);
   const fj = path.join(dir, sym + ".json"), fc = path.join(dir, sym + ".csv"), file = fs.existsSync(fj) ? fj : fs.existsSync(fc) ? fc : null;
   if (!file) throw new Error(`${sym}: no bar file (${sym}.json or ${sym}.csv) in ${dir}`);
@@ -143,17 +143,22 @@ function loadBars(dir, sym) {
     for (const k of ["date", "open", "high", "low", "close"]) if (ix(k) < 0) throw new Error(`${sym}: ${path.basename(file)} header has no ${k}`);
     rows = L.slice(1).map((l) => { const x = l.split(","); return { t: dateOf(x[ix("date")].trim()), o: +x[ix("open")], h: +x[ix("high")], l: +x[ix("low")], c: +x[ix("close")], v: ix("volume") >= 0 ? +x[ix("volume")] : null }; });
   }
-  let weekendDropped = 0; const bars = [];
+  let weekendDropped = 0, afterLastDropped = 0; const bars = [];
   for (const [i, b] of rows.entries()) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.t) || !fin(Date.parse(b.t + "T00:00:00Z"))) throw new Error(`${sym}: row ${i + 1} has a bad date ${JSON.stringify(b.t)}`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.t) || !fin(Date.parse(b.t + "T00:00:00Z")) || new Date(b.t + "T00:00:00Z").toISOString().slice(0, 10) !== b.t) throw new Error(`${sym}: row ${i + 1} has a bad date ${JSON.stringify(b.t)}`);
     if (![b.o, b.h, b.l, b.c].every((x) => fin(x) && x > 0)) throw new Error(`${sym}: ${b.t} has a price that is not a finite number > 0`);
     if (b.h < b.l) throw new Error(`${sym}: ${b.t} high ${b.h} < low ${b.l}`);
+    const tol = 1e-9 * b.h;
+    if (b.o > b.h + tol || b.o < b.l - tol || b.c > b.h + tol || b.c < b.l - tol) throw new Error(`${sym}: ${b.t} open or close outside [low, high] (IBS would leave [0, 1])`);
     if (isWeekend(b.t)) { weekendDropped++; continue; }
+    if (lastBar && b.t > lastBar) { afterLastDropped++; continue; }   // the forming-bar guard: nothing after window.lastBar is used
     if (bars.length && b.t <= bars[bars.length - 1].t) throw new Error(`${sym}: ${b.t} is not after ${bars[bars.length - 1].t} (dates must strictly increase; duplicates refused)`);
     bars.push(b);
   }
   if (bars.length < 2) throw new Error(`${sym}: fewer than 2 bars`);
-  return { bars, sha: sha256(buf), file: path.basename(file), weekendDropped };
+  // coverage: the file must reach the window's end (within 7 days); a symbol whose data stop early is refused, never silently thinner
+  if (coverTo) { const end = Date.parse(coverTo + "T00:00:00Z"), last = Date.parse(bars[bars.length - 1].t + "T00:00:00Z"); if (last < end - 7 * 86400000) throw new Error(`${sym}: its bars end ${bars[bars.length - 1].t}, before the window's end ${coverTo} (coverage)`); }
+  return { bars, sha: sha256(buf), file: path.basename(file), weekendDropped, afterLastDropped };
 }
 
 // ── NEW: the rule's signals ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -176,6 +181,7 @@ function checkRule(R) {
   if (P.maxHoldDays != null && !(Number.isInteger(P.maxHoldDays) && P.maxHoldDays >= 1)) e("params.maxHoldDays: an integer >= 1");
   const W = (R && R.window) || {};
   if (!/^\d{4}-\d{2}-\d{2}$/.test(W.from || "") || !/^\d{4}-\d{2}-\d{2}$/.test(W.to || "") || !(W.from < W.to)) e("window: from < to, both YYYY-MM-DD");
+  if (W.lastBar != null && !(/^\d{4}-\d{2}-\d{2}$/.test(W.lastBar) && W.lastBar >= W.to)) e("window.lastBar: YYYY-MM-DD, on or after window.to (bars after it are dropped: the forming-bar guard)");
   const C = (R && R.costs) || {};
   if (!(fin(C.roundTrip) && C.roundTrip >= 0 && C.roundTrip < 0.05)) e("costs.roundTrip: a fraction in [0, 0.05) (0.0006 = 0.06%)");
   if (!(fin(C.stress) && C.stress >= C.roundTrip)) e("costs.stress: a fraction >= costs.roundTrip (the 2x-cost gate)");
@@ -187,6 +193,7 @@ function checkRule(R) {
   const C2 = (R && R.controls) || {};
   if (!(Number.isInteger(C2.placeboDraws) && C2.placeboDraws >= 10 && Number.isInteger(C2.placeboSeed))) e("controls: integer placeboDraws >= 10 and placeboSeed");
   if (!(Number.isInteger(C2.floorSeeds) && C2.floorSeeds >= 5)) e("controls.floorSeeds: an integer >= 5");
+  if (C2.maxWholeRuleFalsePass != null && !(fin(C2.maxWholeRuleFalsePass) && C2.maxWholeRuleFalsePass >= 0 && C2.maxWholeRuleFalsePass <= 0.2)) e("controls.maxWholeRuleFalsePass in [0, 0.2] (R313: 0.05)");
   if (!(Array.isArray(C2.leakSeeds) && C2.leakSeeds.length >= 1 && C2.leakSeeds.every(Number.isInteger))) e("controls.leakSeeds: a list of integer seeds");
   if (bad.length) throw new Error("the rule is refused:\n  - " + bad.join("\n  - "));
   return R;

@@ -40,8 +40,10 @@
  },
  "window": {
   "from": "2000-01-01",
-  "to": "2026-09-30"
+  "to": "2026-09-30",
+  "lastBar": "2026-10-01"
  },
+ "reservedForRegistration": true,
  "costs": {
   "roundTrip": 0.0012,
   "stress": 0.0024,

@@ -27,7 +27,7 @@ Three NEW files. No live file is edited, so `base/` holds no copy:
 
 ## Checks (cloud, 2026-10-16)
 
-`node docs/server-backtest-runner/2026-10-16/selftest.cjs` → `ALL 43 CASES PASSED`, using synthetic bars only. It covers:
+`node docs/server-backtest-runner/2026-10-16/selftest.cjs` → `ALL 62 CASES PASSED`, using synthetic bars only. It covers:
 
 - **Verbatim reuse:** 20 functions identical to r313's text.
 - **Hand-computed known answer:** two trades at chosen closes, net = gross − 0.06% exactly, the month mean, an open trade not counted, NW t on [1%, 2%, −0.5%, 1.5%] = 3.5777, and the time cap.
@@ -41,13 +41,45 @@ Three NEW files. No live file is edited, so `base/` holds no copy:
 - **The shipped rule file** equals `make-rules.cjs`'s output and passes `checkRule`.
 - **deploy / rollback / record.**
 
-## Finding to check at home: the null bar value
+## The null bar value (resolved by the checker)
 
 - `barFor(320, 1 variant, seed 313)` reproduces R313's **NW part exactly (1.66)**.
-- The null-bar part, run on the **port** (the only null bar in this copy), gives **1.666**. R313's registry entry says **1.658**, from `backend/lib/null-bar.js`.
-- Either the port is not arithmetically identical to the house file for this call (its header claims it is), or R313's 1.658 came from a different call.
-- At home the selftest loads the house file. There this becomes a counted case that demands 1.658.
-- Registered tests are unaffected: their bar is taken from the rule as registered. Only a computed (exploratory) bar uses `barFor`.
+- The null-bar part on the port gives 1.666. R313's registry says 1.658, but that was an **unseeded** `nullBar` call at registration (`register-r310.js` calls it with no rng, so Math.random). Over 40 seeds the port's p95 at n = 320 spans 1.608–1.674, and several seeds give exactly 1.658. So 1.658 is not a seeded known answer, and the selftest no longer asserts it.
+- What the selftest asserts instead: bar = max(NW part, null-bar part). At home, where both exist, it also asserts that **the house `backend/lib/null-bar.js` and the server's port give the same value for the same seeded call**. The port's header claims its own selftest proves this, but `docs/server/wave6-agents/selftest.cjs` has no such check.
+- Registered tests are unaffected: their bar is the one in the rule. Only a computed (exploratory) bar uses `barFor`.
+
+## Changes after checker cycle 1
+
+Cycle 1 result: 43/43 passed, but 15 of 33 mutations survived, including every timing gate and the t gate. It also found a selftest case that would FAIL at home (the 1.658 assertion). The fixes:
+
+- **Leak test:** an unmeasured t (null) now **fails**, as in R313 (it used to pass).
+- **R313's whole-rule calibration is added.** Each drift-kept scramble gets its own placebo and is judged by the full rule against the floor of the other seeds. If the false-pass rate is over `controls.maxWholeRuleFalsePass` (default 0.05), the verdict is **HELD**, with the rule's own verdict kept beside it. A floor with fewer usable seeds than `controls.floorSeeds` gives **CANNOT MEASURE**.
+- **Forming-bar guard and coverage:** `window.lastBar` drops later bars (counted). A symbol whose file ends more than 7 days before `window.to` is refused.
+- **Bar rows:** an open or close outside [low, high] is refused, and so is an impossible date (2010-02-30).
+- **`reservedForRegistration: true`** on the shipped draft: no exploratory run may read its bars before it is registered. A rule's `registration` is still self-declared; the runner cannot see the registry on the server. The label names the id the rule claims, and the operator confirms it at home.
+- **Write-once without a race:** the result is written in full beside its name, then linked to the name. `link()` fails if the name already exists.
+- **Smaller fixes:**
+  - The seal is described as detecting accidental or naive edits only; it is not a signature.
+  - `canon` drops undefined keys, as JSON does.
+  - Null percentages stay null.
+  - `bar.seed` / `bar.n` use `??` instead of `||`.
+  - The CLI refuses a missing value, a duplicate flag, or a value that is itself a flag.
+- **New cases** (with the matching mutations now caught):
+  - a drift-kept no-edge universe (t ≈ 10 yet DID NOT PASS, on the placebo and floor gates);
+  - all 11 gates of `decideRule` flipped one at a time;
+  - a registered bar of 99 used as given;
+  - open trades not counted;
+  - the exact 2×-cost shift;
+  - `window.from`;
+  - the placebo carrying the same cost;
+  - the month unit (two trades, one month);
+  - tampering with the trades, the rule and the bar;
+  - the race;
+  - the calibration HELD path;
+  - a leak test with a null t;
+  - the new bar refusals, the forming-bar guard, coverage, and the reserved rule.
+- **No case was weakened or removed.** The one changed case is the home null-bar assertion, which is replaced by the house-equals-port check (reason above).
+- **Note:** the verbatim `simulate` comment "an exit day … can never also be an entry" is untrue for `rsi-dip` with `closeAboveSma`. It is kept byte for byte because it is R313's text. The behaviour is the conservative one: no same-day re-entry.
 
 ## Missing from this clean copy (not reconstructed)
 
@@ -61,7 +93,7 @@ Three NEW files. No live file is edited, so `base/` holds no copy:
 
 1. `node docs/server-backtest-runner/2026-10-16/selftest.cjs`. It must end `ALL … PASSED`, with the null-bar case counted at 1.658 (see the finding).
 2. `node docs/server-backtest-runner/2026-10-16/deploy.cjs --plan`, then `--apply`. Then `record.cjs --dry` and record the change.
-3. Copy `backend/bt/` to the server tree (`/home/traids/traids/backend/bt/`) by the usual deploy path. Check that the server has `backend/lib/atomic-write.js`, and either `backend/lib/null-bar.js` or `factory/lib/nullbar.cjs`.
+3. On the server tree, `backend/package.json` must make `backend/lib/*.js` CommonJS (as at home); otherwise the final write fails. Copy `backend/bt/` to the server tree (`/home/traids/traids/backend/bt/`) by the usual deploy path. Check that the server has `backend/lib/atomic-write.js`, and either `backend/lib/null-bar.js` or `factory/lib/nullbar.cjs`.
 4. To make the first use a test:
    - Register it at home in `backend/data/test-registry.json`, freezing the rule, universe, costs, unit, bar, gates and read condition **before any bar is read**.
    - Add `registration: { id, registeredOn }` and the registered `bar.tRequired` to the rule file (with `make-rules.cjs`), and redeploy.
