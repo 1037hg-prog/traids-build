@@ -78,6 +78,15 @@ The package records the row but does not decide the question.
 
 The root `package.json` here is `"type": "module"` and there is no `backend/package.json`, so `require()` of any backend `.js` fails in this copy. The home tree presumably has the CommonJS marker. The package scripts load backend files through `loadcjs.cjs`, which works in both trees. `npm ci` cannot run here because `package-lock.json` is not in the copy. Nothing in this package needs an npm dependency.
 
+## Test edits (AGENTS.md: every test edit, with its reason)
+
+The checker ran four cycles. No test was removed, and none was weakened:
+
+- "an existing veto shadow passes" gained a `{vetoShadow:true}` fixture with no `ctrl`. Dropping the vetoShadow scope check had survived as a mutant.
+- "window edges" was split into two checks that read the refusal **message**. The old check passed on the exit code alone, which the "after today" refusal also returns.
+- "the real node --check runs on apply" was renamed and split into three. `nodeCheck` rejects a broken file and accepts a good one. `run()` with no `checkImpl` refuses a broken staged copy and leaves nothing behind. Apply with the default check succeeds on the real staged file. The old name claimed more than the check tested.
+- "the live repo has no cost-band-gate.js yet" and "the live repo itself is untouched by the selftest" became "base or applied, never drifted". The old checks would fail after a correct `--apply` at home. The new ones still fail on drift.
+
 ## Checks run here
 
 - `node docs/cost-band-refusal/2026-10-16/selftest.cjs` → `SELFTEST PASSED (72 checks)`
