@@ -106,7 +106,8 @@ backend/data/options-mirror-expired.json
 ```
 
 Idempotent: a mark keeps the date it was first made. A row's expiry is read from `optExpiry`, from `occAtm`/`occK2`, or from a `legs[]`
-list — and a row whose legs disagree on the expiry names none and is left alone. A log line that will not parse is **counted and
+list — and a row with no `optExpiry` field whose legs disagree on the expiry names none and is left alone (an `optExpiry` field wins
+over the legs when both are present). A log line that will not parse is **counted and
 reported**, never dropped in silence. If the log is absent the run says so rather than assuming anything.
 
 ---
@@ -139,18 +140,21 @@ normalising the run's own timestamps.
 * the bar calls those rules make — same symbols, same feed, same window (C1);
 * the idempotence rule: a row the ledger already holds is never written twice, voided-and-restored wings included (C10, C11, C11b);
 * every exit code the file already set;
-* a night with nothing past expiry stops exactly where it always stopped (C16).
+* a night with nothing past expiry stops where it always stopped for the ledger, the board and the tombstones (C16) — it does now
+  also write `backend/data/options-mirror-expired.json`, which nothing else reads.
 
-## The two edits to lines that were already there
+## The edits to lines that were already there
 
-Everything else is inserted. For the record, the staged file changes two existing lines:
+Everything else is inserted. For the record, the staged file changes five existing lines — these two:
 
 1. the early return `if (!todo.length) { … Idempotent no-op … }` now also asks whether the vanished-legs pass has a candidate — else a
    night with no wing due would return before the new rule ran;
 2. fix 4.7's official-close call is guarded with `!todo.length ? {} :` — with no wing and no debit vertical due, that recording call is
    not made at all rather than made with no symbol and no start date.
 
-and one existing log line gains a third branch so a vanished row prints `entry … value …` rather than `debit … worth …`.
+one existing log line gains a third branch so a vanished row prints `entry … value …` rather than `debit … worth …`, and the sweep's
+IIFE becomes `const main = async () => { … };` + `if (require.main === module) main();` so a test can load the rules without running
+the sweep (two lines: the opening and the closing).
 
 ## What this does to the 2026-10-12 package
 
@@ -182,7 +186,7 @@ node docs/options-vanished-settles/2026-10-16/selftest.cjs        ALL 69 CHECKS 
 * **B** the rules as pure functions on known answers: the intrinsic (12 cases plus the grid against the wings' own expression), the leg
   check, the snapshot reader, the vanished test in all six ways it can refuse, the stored-close order, the settle row (five priced
   cases, two refused), and the mirror marks with their idempotence.
-* **C** nineteen whole runs as child processes in scratch trees: no regression against the base file, the defect and its fix, UNKNOWN
+* **C** nineteen checks over thirty-one whole runs as child processes in scratch trees: no regression against the base file, the defect and its fix, UNKNOWN
   flagged and never guessed, the width cap, every way a snapshot can fail to prove the legs are gone, an expired option outside the
   rule, idempotence, the flag lifted and the later self-settle, the mirror marks, an empty board, and a vanished-only night that asks
   for no bar at all.
@@ -218,8 +222,10 @@ package reads are named by convention and should be confirmed against the live o
 
 * `backend/data/alpaca-options-positions.json` — the stored snapshot of the option legs the broker reports. **If the live mirror writes
   it under another name, or does not write it at all, the vanished-legs rule simply never fires**: `vanishedCheck` answers "there is no
-  readable broker snapshot" and every expired spread is left exactly where it is today. The failure mode of a wrong name is the old
-  behaviour, not a wrong settle.
+  readable broker snapshot" and every expired spread is left exactly where it is today — the failure mode of a wrong FILE name is the
+  old behaviour. **That is not true of a wrong FIELD name inside the right file, nor of a mirror that writes an empty or partial list
+  after a failed broker read: `snapshotLegs` returns an empty Set rather than null and every expired spread then reads as vanished.
+  That is open defect 1 below; fix it before the apply.**
 * `backend/data/alpaca-options-mirror.jsonl` — the options mirror's order log. If the name is wrong the run says `options mirror log
   absent` and marks nothing.
 
@@ -228,8 +234,9 @@ Expected shapes (both read tolerantly):
 ```jsonc
 // alpaca-options-positions.json
 { "asOf": "2026-09-21T13:05:00Z", "positions": [ { "symbol": "TSLA260918P00400000" }, … ] }
-//   also read: a plain list of OCC strings, { legs: [...] }, and entries keyed occ / sym instead of symbol
-//   asOf is REQUIRED: without it nothing is ever treated as vanished
+//   also read: { legs: [...] }, and entries keyed occ / sym instead of symbol
+//   asOf is REQUIRED (and must be a full timestamp): without it nothing is ever treated as vanished, so a bare list of OCC
+//   strings, which can carry no asOf, is read but can never settle anything
 
 // alpaca-options-mirror.jsonl  (one JSON object a line)
 { "ts": "…", "ticketId": "…", "sym": "MSFT", "status": "sent", "orderId": "…",
@@ -273,22 +280,58 @@ board and the tombstones; deploy/rollback on scratch repos with drift and all fi
 preload makes `fetch`/`http`/`https`/`net`/`dns` throw and records the attempt, and check C19 asserts the recorded count is zero across
 all runs.
 
+### The independent check of cycle 1 — run, and its verdict is FIX NEEDED
+
+A checker ran read-only over the package after the builder stopped. It re-ran every command (all `node --check` exit 0; the selftest
+**69 checks, ALL PASSED**, twice, byte-identical output, and again under `TZ=America/Denver` and `TZ=Pacific/Kiritimati`; `deploy.cjs`
+no-args exit 2, `--plan` exit 0, `rollback.cjs --plan` exit 0, `record.cjs --dry` exit 2 refusing because this copy has no
+`change-registry.json`), confirmed `git status --porcelain` empty and `backend/data/` unchanged before and after every one of them,
+confirmed `base/` is byte-identical to the live file and that `STAGED_SHA` matches, and wrote **28 mutants of its own** (22 caught,
+6 gaps). It confirmed: no broker or network call anywhere; AGENTS.md compliance (no secrets, no personal details, JSON only through
+`atomic-write.js`, `close-chain.cjs` never required, nothing newer than Node 18, nothing written outside `docs/`, no registered test
+touched); no double settle, no ledger row without a board removal and none the other way; no order or time-zone dependence.
+
+**Three defects, open — fix these first, in this order:**
+
+1. **`snapshotLegs` fails OPEN** (`staged/backend/options-settle.js:139-145` with `:150-159`). It reads the contract only from
+   `x.symbol || x.occ || x.sym`. A `positions` array that is empty, or whose entries key the contract some other way, yields a
+   **non-null but empty Set**, and `vanishedCheck` then answers "vanished" for *every* expired spread on the board. Probed: an empty
+   `positions` with a valid `asOf` settled all three fixture spreads, including the one the real snapshot still reports. Fix: a list
+   that yields ZERO parseable OCC symbols must read "cannot tell", never "everything vanished".
+2. **`vanLegs` never cross-checks the OCC legs against the position's own `optAtm` / `optK2` / `optCall`** (`:129-137`, used `:395`,
+   `:404`). Fix 4.2's `isDebitVertical` does exactly that (`:71-75`) and this rule drops it. Probed: a position recording 50/60 but
+   carrying OCC strings for 500/510 settled silently at 500/510, so its `rMult` is computed against the wrong R. Either cross-check
+   and send a mismatch to the `vanLeft` line, or record the disagreement on the row.
+3. **A vanished row inherits stale official-close fields** (`:190`, `obs: { ...(p.obs || {}), … }`). The vanished branch writes no
+   `settleUnderOfficial` / `pnlOfficial`, so whatever the open position carried survives into the ledger and the chain log prints it
+   as this row's official close. Probed: a row priced at 506 logged `(official close 999: $-1234)`. Set them `null` explicitly.
+
+**Six mutants no check caught — add a check for each before trusting the suite:** the ET zone in `etDateOf` (`:120`; every fixture
+`asOf` has the same date in UTC and ET — needs one where they differ, e.g. `2026-09-19T02:00:00Z`); the `since` date held across a
+re-raised flag (`:419`; the behaviour is right, nothing proves it); `exit: +value.toFixed(4)` (`:182`; every fixture intrinsic is an
+integer); `obs.optCall` taken from the OCC leg (`:190`); the mirror mark key dropping `|${exp}` (`:215` — two `"sent"` rows for one
+ticketId with no orderId collapse into one mark; put the row's `ts` in the key); and `dropStuck` (`:392`, `:406` — no fixture is both
+stuck for a bar and vanished, and that is the path by which an R21 wing enters the ledger under this rule).
+
+**Nine concerns worth a decision, not necessarily a change:** the operator-facing summary mis-labels vanished rows and prints them
+twice (`:441-443` — "wing(s) … kept their premium … R21 settled count" for a board ticket); the second flag-lift branch at `:421` is
+unreachable; new board / data writes on nights the base file wrote nothing (`:249`, `:280`), which widens the window in which a
+concurrent board edit is clobbered, and `:249` rewrites its file with a fresh `asOf` even when nothing is added; no freshness bound on
+the snapshot (`:155` — a stale file keeps driving settles for older expiries indefinitely); a date-only or epoch `asOf` is refused
+(fail-closed, but narrower than "read tolerantly" claims); and `harness/no-network.cjs` leaves `dns.promises` unpatched (nothing in
+the package uses it and no socket can open, so C19's zero is still honest).
+
+Six factual errors the check found in this file have been corrected in place above.
+
 ### Left to do, in order
 
-1. **Run the independent check.** A checker subagent was launched read-only over this package and was still running when the session
-   was stopped; **its report was never seen, so treat none of its findings as known**. Re-run it: `node --check` on every file, the
-   selftest twice (the count must be 69 both times and must never shrink), `deploy.cjs` with no args / `--plan`, `rollback.cjs
-   --plan`, `record.cjs --dry` (each must write nothing — check `git status --porcelain` and `backend/data/` before and after), and
-   `git diff --no-index base/… staged/…` read as a reviewer.
-2. **Fresh mutation tests from someone other than the builder.** The eleven in section F are the builder's own and are therefore the
-   weakest part of the evidence. Mutants worth trying that section F does NOT cover: a sign or off-by-one error in the intrinsic;
-   `shortK`/`longK` swapped in the written row; the wrong contract multiplier; the snapshot date compared with `>=` instead of `>`; an
-   empty `positions` list read as "cannot tell"; a credit spread priced on the debit branch; `reason: "expiry"` instead of
-   `"expiry-vanished"`; `obs.settleTag` dropped; the `since` date lost when a flag is re-raised; a settled position left on the board;
-   a tombstone not written. Mutate a COPY of the package and re-stamp `STAGED_SHA` in its `deploy.cjs`, or check A2 catches every
-   mutant and proves nothing. Any mutant no check catches is a gap: add a check for it.
-3. **Fix and repeat, at most 5 cycles in all (one is spent).** Stop at once on a regression — a check that passed earlier now failing
-   — or if any test disappears or the count of 69 shrinks.
+1. **Fix the three defects**, add the six missing checks, and decide the nine concerns.
+2. **Re-run the whole check** after each fix: `node --check` on every file, the selftest (the count must never shrink below 69 —
+   it should grow), `deploy.cjs` no-args / `--plan`, `rollback.cjs --plan`, `record.cjs --dry`, each writing nothing. Re-stamp
+   `STAGED_SHA` in `deploy.cjs` after every change to the staged file, and mutate a COPY with its own re-stamp, or check A2 catches
+   every mutant and proves nothing.
+3. **At most 5 cycles in all; one is spent.** Stop at once on a regression — a check that passed earlier now failing — or if any test
+   disappears or the count shrinks.
 4. **Only then, at home:** `deploy.cjs --plan`, read it (it prints how the 2026-10-12 a-booking package currently reads the file, and
    what the new rule would find in the real data), confirm the two file names above against the live options mirror, `--apply` after
    16:00 MT once the close chain has finished, read one live run of the settle step, then `record.cjs --dry` and without `--dry`.
