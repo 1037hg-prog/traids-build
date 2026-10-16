@@ -30,7 +30,7 @@ The w3-r260 seed is many files in one call, so its script was far over the cut. 
 
 ## Checks (cloud, 2026-10-16)
 
-- `node docs/r260-seed-push-fix/2026-10-16/selftest.cjs` → `ALL 29 CASES PASSED`. It uses a fake ssh function that cuts at 8,190 and runs the rest with real bash in a temp folder; no host is contacted. It covers:
+- `node docs/r260-seed-push-fix/2026-10-16/selftest.cjs` → `ALL 39 CASES PASSED`. It uses a fake ssh function that cuts at 8,190 and runs the rest with real bash in a temp folder; no host is contacted. It covers:
   - the defect reproduced on base, plus a small-seed control;
   - the chunked push landing all files with every script ≤ 5,000;
   - per-file modes;
@@ -42,7 +42,9 @@ The w3-r260 seed is many files in one call, so its script was far over the cut. 
   - a chunked sha read of 442 names;
   - "nothing else changed" in pull-server;
   - make-own-stage on a plainly-labelled fixture;
-  - deploy / rollback / drift / record on a temp repo.
+  - deploy / rollback / drift / record on a temp repo;
+  - (added after checker cycle 1) `make-own-stage --write` run end to end on a temp copy of the package: both twins staged, files.cjs then lists 4 files, deploy and rollback over all 4, refusal when home's own.cjs changed after staging, refusal when the staged pull-server lacks `pushChunked`; lockWait 120 reaching every chunk; the 5,000 limit itself; an ssh failure at chunk 2 naming the chunk; chunking linear in the number of files; rollback refusing an edited twin. Each section reports a named FAIL if it throws. The package cases run on a temp copy of the package, so they read the same before and after the home step.
+- Independent checker, cycle 1: diagnosis confirmed. With real bash, any cut between line 9 and the EOF_SHA terminator gives exactly that message; CRLF, dash, odd file names and Windows quoting give other errors. 29/29 passed and the core mutations were caught, but the home-only `--write` path, files.cjs's own.cjs entries, lockWait and rollback drift were untested (8 mutations missed). All 8 are now caught.
 - `deploy.cjs --plan` on this clean copy reports **drift** for `deploy/server/pull-server.cjs`, because `deploy/server/` does not exist here. That is the correct refusal. At home it must read `base` for both twins.
 
 ## Missing from this clean copy (not reconstructed)
@@ -53,6 +55,11 @@ The w3-r260 seed is many files in one call, so its script was far over the cut. 
 - `docs/server/wave3-sleeves/cell.cjs`, which defines the w3-r260 files. The real seed size was not measured; the selftest uses a 142-file seed with realistic names.
 
 ## Not changed, and worth knowing
+
+- `pushChunked` takes and releases the unit's lock once per chunk. The old single push held it for the whole seed. This is safe only if own.cjs seeds **before** it flips the map to the server, so that the VPS unit cannot run between chunks. **Check this at home** in own.cjs (the cutover's order). A lock busy at chunk k returns `{ busy: true, partial: true, pushed }`. own.cjs's existing `if (r.busy)` abort still fires; the chunks that landed are equal to home's files, so the next cutover's seed check accepts them.
+- Do **not** name own.cjs's ownership-guard line (`srv = PS.remoteShas(ssh, remoteData, names)`, the anchor of docs/pause-aware's mutants) in make-own-stage. Any package that pins own.cjs's current bytes will read drift after this deploy.
+- If own.cjs's own selftest pins the exact ssh call sequence of the seed, the extra sha read per chunk will show there. Expect to update that test's expected sequence. It must not be weakened: the seed must still be verified.
+- Measure the real w3-r260 seed at home (`make-own-stage --plan`, and the w3-r260 manifest's entries). For the cut to fall inside the EOF_SHA block it needs roughly 70 or more files with names of about 45 characters.
 
 - `pushInputs` still pushes a unit's inputs in one script. w3-r260 has one input (`r259-universe.json`), which is far under the cut. A wave with many inputs would need the same change.
 - `remoteTarCommand` (the pull, and the seed-mode read of the server's copy) lists every non-directory entry in its script. A unit with more than about 200 file entries would hit the same cut on a pull. Directory entries are one line each.

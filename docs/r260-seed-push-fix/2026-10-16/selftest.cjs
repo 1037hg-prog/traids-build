@@ -16,6 +16,8 @@ const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
 let pass = 0, fail = 0;
 const ok = (name, cond, detail) => { if (cond) { pass++; console.log("  ok   " + name); } else { fail++; console.log("  FAIL " + name + (detail ? " — " + String(detail).slice(0, 500) : "")); } };
 const quiet = (s) => String(s).replace(/ALL/g, "all");
+/** one section: a throw inside it is a named FAIL, and the later sections still run (review cycle 1) */
+const section = (title, fn) => { console.log(title); try { fn(); } catch (e) { ok(`${title}: the section ran to its end`, false, `threw: ${String(e.stack || e).split("\n").slice(0, 3).join(" ")}`); } };
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "r260-selftest-")), ROOT = path.join(TMP, "vps");
 const RD = "/home/traids/traids/backend/data", LOCAL = ROOT + RD;
@@ -41,8 +43,7 @@ const SEED = [
 ];
 const landed = (files) => files.filter((f) => { try { return fs.readFileSync(path.join(LOCAL, f.rel)).equals(f.data); } catch { return false; } }).length;
 
-console.log("the defect, reproduced on the BASE pull-server (unchanged copy)");
-{
+section("the defect, reproduced on the BASE pull-server (unchanged copy)", () => {
   fresh();
   const one = BASE.remotePushCommand(RD, SEED, { lock: "w3-r260.flock" });
   const lineOf = one.split("\n").findIndex((l) => /<<'EOF_SHA'$/.test(l)) + 1;
@@ -53,10 +54,9 @@ console.log("the defect, reproduced on the BASE pull-server (unchanged copy)");
   fresh();
   const small = SEED.slice(0, 5), V2 = fakeSsh(), r = BASE.pushRemote(V2.fn, RD, small, { lock: "w3-r260.flock" });
   ok("the control: a small seed (5 files) goes in one script and lands — the code is right, its script length is the defect", r.pushed === 5 && landed(small) === 5, JSON.stringify(r));
-}
+});
 
-console.log("the fix — pushChunked / remoteShasChunked (STAGED pull-server)");
-{
+section("the fix — pushChunked / remoteShasChunked (STAGED pull-server)", () => {
   fresh();
   const V = fakeSsh(), r = PS.pushChunked(V.fn, RD, SEED, { lock: "w3-r260.flock" });
   const pushes = V.S.calls.filter((c) => /EOF_MV/.test(c)), reads = V.S.calls.filter((c) => /sha256sum -- "\$f"/.test(c));
@@ -81,6 +81,16 @@ console.log("the fix — pushChunked / remoteShasChunked (STAGED pull-server)");
   // ssh down
   let ed = null; try { PS.pushChunked(() => ({ ok: false, status: 255, out: "", err: "ssh: connect to host traids port 22: Connection timed out" }), RD, SEED, {}); } catch (x) { ed = x.message; }
   ok("ssh down: THROWS (fail-closed), never a quiet zero", /push to .* failed \(exit 255\)/.test(ed || ""), ed);
+  // lockWait passed through (own.cjs passes 120), and the limit itself
+  fresh();
+  const VW = fakeSsh(), rw = PS.pushChunked(VW.fn, RD, SEED, { lock: "w3-r260.flock", lockWait: 120 }), pw = VW.S.calls.filter((c) => /EOF_MV/.test(c));
+  ok("lockWait 120 reaches every chunk's flock (-w 120); SCRIPT_MAX is 5,000 and every script sent is at most that", rw.pushed === SEED.length && pw.every((c) => /flock -w 120 9 \|\| exit 75/.test(c)) && PS.SCRIPT_MAX === 5000 && VW.S.longest <= 5000, VW.S.longest);
+  // an ssh failure at chunk 2 says which chunk and how many landed
+  fresh();
+  let n2 = 0; const VF = fakeSsh(), failAt2 = (script, o) => (/EOF_MV/.test(script) && ++n2 === 2 ? { ok: false, status: 255, out: "", err: "Connection reset" } : VF.fn(script, o));
+  let ef = null; try { PS.pushChunked(failAt2, RD, SEED, { lock: "w3-r260.flock" }); } catch (x) { ef = x.message; }
+  ok("ssh fails at chunk 2: THROWS naming chunk 2 and the files that landed before it", /chunk 2 of \d+; \d+ file\(s\) landed and were verified before it/.test(ef || "") && !/; 0 file/.test(ef || ""), ef);
+  ok("chunkByScript is linear and exact: 2,000 names chunked with build() called O(n) times, every run within the limit", (() => { let calls = 0; const names = Array.from({ length: 2000 }, (_, i) => "n" + i); const b = (r) => { calls++; return PS.remoteShasCommand(RD, r); }; const ch = PS.chunkByScript(names, b); return calls < 3 * names.length && ch.flat().join() === names.join() && ch.every((c) => PS.remoteShasCommand(RD, c).length <= PS.SCRIPT_MAX); })());
   // empty and small lists
   const VE = fakeSsh(), re = PS.pushChunked(VE.fn, RD, [], {});
   ok("an empty list: { pushed: 0 }, no ssh at all", re.pushed === 0 && VE.S.calls.length === 0);
@@ -94,57 +104,89 @@ console.log("the fix — pushChunked / remoteShasChunked (STAGED pull-server)");
   const unc = (() => { try { BASE.remoteShas(fakeSsh().fn, RD, names); return null; } catch (x) { return x.message; } })();
   ok("the control: the SAME names through ONE remoteShas script are cut on the way and fail (or answer short) — so the chunked read is needed", unc !== null, unc);
   ok("chunkByScript: empty -> no chunk; one item over the limit still goes alone (never dropped); order kept", PS.chunkByScript([], () => "", 10).length === 0 && PS.chunkByScript(["x"], () => "y".repeat(99999), 10).length === 1 && PS.chunkByScript([1, 2, 3, 4, 5], (r) => "z".repeat(r.length * 2000), 4000).map((c) => c.join("")).join("|") === "12|34|5");
-}
+});
 
-console.log("nothing else changed in pull-server");
-{
+section("nothing else changed in pull-server", () => {
   const strip = (t) => t.replace(/\/\/ ── CHUNKED push[\s\S]*?(?=\/\/ ── home lock)/, "").replace(/^const remoteShasCommand = .*\n/m, "").replace("const r = ssh(remoteShasCommand(remoteData, rels));", "const r = ssh(`cd ${q(remoteData)} || exit 7; for f in ${rels.map(q).join(\" \")}; do if [ -f \"$f\" ]; then sha256sum -- \"$f\"; else echo \"ABSENT  $f\"; fi; done`);").replace("module.exports = { SCRIPT_MAX, chunkByScript, remoteShasCommand, remoteShasChunked, pushChunked, loadManifest,", "module.exports = { loadManifest,");
   const b = fs.readFileSync(path.join(H, "base", "docs", "server", "wave1-crypto", "pull-server.cjs"), "utf8"), s = fs.readFileSync(path.join(H, "staged", "docs", "server", "wave1-crypto", "pull-server.cjs"), "utf8");
   ok("the staged pull-server, with the added block, the extracted sha command and the export line taken out, is the base byte for byte", strip(s) === b);
   ok("both staged twins are byte-equal, and both base twins are byte-equal", fs.readFileSync(path.join(H, "staged", "deploy", "server", "pull-server.cjs")).equals(Buffer.from(s)) && fs.readFileSync(path.join(H, "base", "deploy", "server", "pull-server.cjs")).equals(Buffer.from(b)));
   const fs2 = SEED.slice(0, 7), V1 = fakeSsh(), V2 = fakeSsh(); fresh(); BASE.pushRemote(V1.fn, RD, fs2, { lock: "l.flock" }); BASE.remoteShas(V1.fn, RD, ["a", "b"]); fresh(); PS.pushRemote(V2.fn, RD, fs2, { lock: "l.flock" }); PS.remoteShas(V2.fn, RD, ["a", "b"]);
   ok("pushRemote and remoteShas send byte-identical scripts before and after (their other callers and the W7 / W2b controls are unaffected)", V1.S.calls.length === 2 && V1.S.calls.every((c, i) => c === V2.S.calls[i]));
-}
+});
 
-console.log("make-own-stage (own.cjs is not in this copy: a FIXTURE stands in, plainly not own.cjs)");
-{
-  const repo = fs.mkdtempSync(path.join(TMP, "repo-")); fs.writeFileSync(path.join(repo, "AGENTS.md"), "x"); fs.mkdirSync(path.join(repo, "backend"));
-  const FIX = ["// FIXTURE — not own.cjs: three call shapes the tool must find", "const PS = require(\"./pull-server.cjs\");", "function seed(ssh, d, files, def) {",
-    "  const r = PS.pushRemote(ssh, d, files, { lock: def.lock, lockWait: 120 }); if (r.busy) return { abort: \"seed: its lock on the VPS is held\" };",
-    "  const after = PS.remoteShas(ssh, d, files.map((f) => f.rel));", "  return after;", "}", "function map(ssh, d) { return PS.pushRemote(ssh, d, [], {}); }", ""].join("\n");
-  for (const t of MOS.TWINS) { fs.mkdirSync(path.dirname(path.join(repo, t)), { recursive: true }); fs.writeFileSync(path.join(repo, t), FIX); }
+// the package's own files, COPIED to a temp folder for the cases below, without any own.cjs stage make-own-stage may have put here at home:
+// so these cases read the same before and after the home step (review cycle 1)
+const PKGC = path.join(TMP, "pkgcopy");
+fs.cpSync(H, PKGC, { recursive: true });
+for (const d of ["base", "staged"]) for (const t of MOS.TWINS) fs.rmSync(path.join(PKGC, d, t), { force: true });
+const FIX = ["// FIXTURE — not own.cjs: three call shapes the tool must find", "const PS = require(\"./pull-server.cjs\");", "function seed(ssh, d, files, def) {",
+  "  const r = PS.pushRemote(ssh, d, files, { lock: def.lock, lockWait: 120 }); if (r.busy) return { abort: \"seed: its lock on the VPS is held\" };",
+  "  const after = PS.remoteShas(ssh, d, files.map((f) => f.rel));", "  return after;", "}", "function map(ssh, d) { return PS.pushRemote(ssh, d, [], {}); }", ""].join("\n");
+const mkRepo = (name, { own = FIX, ownTwin = null } = {}) => {
+  const repo = fs.mkdtempSync(path.join(TMP, name)); fs.writeFileSync(path.join(repo, "AGENTS.md"), "x"); fs.mkdirSync(path.join(repo, "backend"));
+  const B = fs.readFileSync(path.join(H, "base", "docs", "server", "wave1-crypto", "pull-server.cjs"));
+  for (const t of ["docs/server/wave1-crypto/pull-server.cjs", "deploy/server/pull-server.cjs"]) { fs.mkdirSync(path.dirname(path.join(repo, t)), { recursive: true }); fs.writeFileSync(path.join(repo, t), B); }
+  if (own != null) MOS.TWINS.forEach((t, i) => { fs.mkdirSync(path.dirname(path.join(repo, t)), { recursive: true }); fs.writeFileSync(path.join(repo, t), i === 1 && ownTwin != null ? ownTwin : own); });
+  return repo;
+};
+const node = (f, args, repo) => cp.spawnSync(process.execPath, [path.join(PKGC, f), ...args, "--repo", repo], { encoding: "utf8" });
+
+section("make-own-stage (own.cjs is not in this copy: a FIXTURE stands in, plainly not own.cjs)", () => {
+  const repo = mkRepo("mos-");
   const out = []; const plan = MOS.main(["--plan", "--repo", repo], (l) => out.push(l));
-  ok("--plan lists every PS.pushRemote( / PS.remoteShas( line with its number (4, 5, 8) and writes nothing", plan === 0 && out.filter((l) => /^line \d+:/.test(l)).map((l) => /^line (\d+)/.exec(l)[1]).join() === "4,5,8" && !fs.existsSync(path.join(H, "base", "deploy", "server", "own.cjs")), out.join("\n"));
+  ok("--plan lists every PS.pushRemote( / PS.remoteShas( line with its number (4, 5, 8) and writes nothing", plan === 0 && out.filter((l) => /^line \d+:/.test(l)).map((l) => /^line (\d+)/.exec(l)[1]).join() === "4,5,8" && !fs.existsSync(path.join(PKGC, "base", "deploy", "server", "own.cjs")), out.join("\n"));
   const sw = MOS.swapLines(FIX, [4, 5]), L = sw.text.split("\n");
   ok("swapLines on the seed's lines 4 and 5: exactly those become PS.pushChunked( / PS.remoteShasChunked(; line 8 (another push) is untouched", /PS\.pushChunked\(ssh, d, files, \{ lock: def\.lock, lockWait: 120 \}\)/.test(L[3]) && /PS\.remoteShasChunked\(ssh, d,/.test(L[4]) && /PS\.pushRemote\(ssh, d, \[\], \{\}\)/.test(L[7]) && sw.text.split("\n").filter((l, i) => l !== FIX.split("\n")[i]).length === 2);
   let e1 = null; try { MOS.swapLines(FIX, [6]); } catch (x) { e1 = x.message; }
   ok("a named line that calls neither: REFUSED", /calls neither/.test(e1 || ""), e1);
-  fs.writeFileSync(path.join(repo, MOS.TWINS[1]), FIX + "// differs\n"); const o2 = [];
-  ok("the twins differ: REFUSED (W1's home patch judges them byte for byte)", MOS.main(["--plan", "--repo", repo], (l) => o2.push(l)) === 1 && /differ/.test(o2.join(" ")));
+  const rd2 = mkRepo("mos2-", { ownTwin: FIX + "// differs\n" }), o2 = [];
+  ok("the twins differ: REFUSED (W1's home patch judges them byte for byte)", MOS.main(["--plan", "--repo", rd2], (l) => o2.push(l)) === 1 && /differ/.test(o2.join(" ")));
   ok("--write without --lines: usage (exit 2), nothing written", MOS.main(["--write", "--repo", repo], () => {}) === 2);
-}
+  // --write, run from the package COPY: base = home's bytes, staged = the named lines changed, BOTH twins; files.cjs then carries all four files
+  const w = node("make-own-stage.cjs", ["--write", "--lines", "4,5"], repo);
+  const b0 = fs.readFileSync(path.join(PKGC, "base", MOS.TWINS[0]), "utf8"), b1 = fs.readFileSync(path.join(PKGC, "base", MOS.TWINS[1]), "utf8"), s0 = fs.readFileSync(path.join(PKGC, "staged", MOS.TWINS[0]), "utf8"), s1 = fs.readFileSync(path.join(PKGC, "staged", MOS.TWINS[1]), "utf8");
+  ok("--write --lines 4,5: base/ holds home's own.cjs for BOTH twins, staged/ the two lines changed for BOTH twins, nothing else differs", w.status === 0 && b0 === FIX && b1 === FIX && s0 === MOS.swapLines(FIX, [4, 5]).text && s1 === s0 && s0 !== FIX, w.stdout + w.stderr);
+  const F = cp.spawnSync(process.execPath, ["-e", "console.log(JSON.stringify(require(process.argv[1]).FILES.map((f) => f.rel)))", path.join(PKGC, "files.cjs")], { encoding: "utf8" });
+  ok("files.cjs now lists the own.cjs twins beside the pull-server twins (4 files)", F.stdout.trim() === JSON.stringify(["docs/server/wave1-crypto/pull-server.cjs", "deploy/server/pull-server.cjs", "deploy/server/own.cjs", "docs/server/wave1-crypto/own.cjs"]), F.stdout + F.stderr);
+  const pa = node("deploy.cjs", ["--plan"], repo), ap = node("deploy.cjs", ["--apply"], repo);
+  ok("deploy --plan then --apply over the four files: own.cjs twins become the staged text, pull-server twins the staged pull-server", pa.status === 0 && /would write 4 file/.test(pa.stdout) && ap.status === 0 && MOS.TWINS.every((t) => fs.readFileSync(path.join(repo, t), "utf8") === s0) && fs.readFileSync(path.join(repo, "deploy/server/pull-server.cjs")).equals(fs.readFileSync(path.join(H, "staged", "deploy", "server", "pull-server.cjs"))), pa.stdout + ap.stdout + ap.stderr);
+  const rb = node("rollback.cjs", [], repo);
+  ok("rollback over the four files: own.cjs twins are home's bytes again", rb.status === 0 && MOS.TWINS.every((t) => fs.readFileSync(path.join(repo, t), "utf8") === FIX), rb.stdout);
+  // home's own.cjs changed after the stage was made: --write again is refused
+  const rch = mkRepo("mos3-", { own: FIX + "// changed at home since\n" }), w2 = node("make-own-stage.cjs", ["--write", "--lines", "4"], rch);
+  ok("home's own.cjs changed since the stage was made: --write REFUSED, the stage left as it was", w2.status === 1 && /holds a different own\.cjs/.test(w2.stdout) && fs.readFileSync(path.join(PKGC, "base", MOS.TWINS[0]), "utf8") === FIX, w2.stdout);
+  // a staged pull-server without pushChunked: --write refused
+  const sp = path.join(PKGC, "staged", "docs", "server", "wave1-crypto", "pull-server.cjs"), keep = fs.readFileSync(sp);
+  for (const d of ["base", "staged"]) for (const t of MOS.TWINS) fs.rmSync(path.join(PKGC, d, t), { force: true });
+  fs.writeFileSync(sp, keep.toString("utf8").replace("function pushChunked(", "function pushChunkedGone("));
+  const w3 = node("make-own-stage.cjs", ["--write", "--lines", "4"], repo); fs.writeFileSync(sp, keep);
+  ok("the staged pull-server has no pushChunked: --write REFUSED, nothing written", w3.status === 1 && /no pushChunked/.test(w3.stdout) && !fs.existsSync(path.join(PKGC, "base", MOS.TWINS[0])), w3.stdout);
+});
 
-console.log("the package (deploy / rollback / record on a temp repo holding the base twins)");
-{
-  const repo = fs.mkdtempSync(path.join(TMP, "pkg-")); fs.writeFileSync(path.join(repo, "AGENTS.md"), "x"); fs.mkdirSync(path.join(repo, "backend"));
+section("the package (deploy / rollback / record on a temp repo holding the base twins)", () => {
+  for (const d of ["base", "staged"]) for (const t of MOS.TWINS) fs.rmSync(path.join(PKGC, d, t), { force: true });
+  const repo = mkRepo("pkg-", { own: null });
   const B = fs.readFileSync(path.join(H, "base", "docs", "server", "wave1-crypto", "pull-server.cjs")), S = fs.readFileSync(path.join(H, "staged", "docs", "server", "wave1-crypto", "pull-server.cjs"));
   const twins = ["docs/server/wave1-crypto/pull-server.cjs", "deploy/server/pull-server.cjs"];
-  for (const t of twins) { fs.mkdirSync(path.dirname(path.join(repo, t)), { recursive: true }); fs.writeFileSync(path.join(repo, t), B); }
-  const node = (f, ...a) => cp.spawnSync(process.execPath, [path.join(H, f), ...a, "--repo", repo], { encoding: "utf8" });
-  const p = node("deploy.cjs", "--plan");
+  const p = node("deploy.cjs", ["--plan"], repo);
   ok("deploy --plan: both twins at base, would write 2, nothing changed", p.status === 0 && /would write 2 file/.test(p.stdout) && twins.every((t) => fs.readFileSync(path.join(repo, t)).equals(B)), p.stdout);
-  const a = node("deploy.cjs", "--apply");
+  const a = node("deploy.cjs", ["--apply"], repo);
   ok("deploy --apply: both twins are the staged bytes", a.status === 0 && twins.every((t) => fs.readFileSync(path.join(repo, t)).equals(S)), a.stdout + a.stderr);
-  const rb = node("rollback.cjs");
+  fs.appendFileSync(path.join(repo, twins[0]), "// edited after the deploy\n");
+  const rr = node("rollback.cjs", [], repo);
+  ok("a twin edited after the deploy: rollback REFUSED, nothing rolled back", rr.status === 1 && /REFUSED/.test(rr.stdout) && fs.readFileSync(path.join(repo, twins[1])).equals(S), rr.stdout);
+  fs.writeFileSync(path.join(repo, twins[0]), S);
+  const rb = node("rollback.cjs", [], repo);
   ok("rollback: both twins are base again, byte for byte", rb.status === 0 && twins.every((t) => fs.readFileSync(path.join(repo, t)).equals(B)), rb.stdout);
   fs.appendFileSync(path.join(repo, twins[1]), "// edited at home since\n");
-  const d = node("deploy.cjs", "--apply");
+  const d = node("deploy.cjs", ["--apply"], repo);
   ok("home's installed copy differs from base (drift): --apply REFUSED, neither twin touched", d.status === 1 && /REFUSED/.test(d.stdout) && fs.readFileSync(path.join(repo, twins[0])).equals(B), d.stdout);
-  const rec = node("record.cjs", "--dry");
+  const rec = node("record.cjs", ["--dry"], repo);
   ok("record --dry prints the record and writes nothing", rec.status === 0 && rec.stdout.includes(sha(S).slice(0, 16)) && /DRY: nothing written/.test(rec.stdout), rec.stdout.slice(0, 300));
   const files = [...fs.readdirSync(H).filter((f) => f.endsWith(".cjs")).map((f) => path.join(H, f)), path.join(H, "staged", "docs", "server", "wave1-crypto", "pull-server.cjs"), path.join(H, "staged", "deploy", "server", "pull-server.cjs")];
   ok("node --check of every package file", files.every((f) => cp.spawnSync(process.execPath, ["--check", f]).status === 0));
-}
+});
 
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(fail ? quiet(`SELFTEST: ${fail} of ${pass + fail} cases FAILED`) : `ALL ${pass} CASES PASSED (r260-seed-push-fix; fake ssh cutting at ${CUT}, no host contacted)`);

@@ -389,11 +389,18 @@ function pushInputs(ssh, remoteData, def, homeDir, { dry = false } = {}) {
 // not land as sent throws and nothing more is sent. pushRemote itself is UNCHANGED (one script, as before: its callers that already chunk —
 // W7's pushVerified, W2b's pushInputs, w3-sync — and their selftests' controls rely on it). A caller with a list that can grow uses pushChunked.
 const SCRIPT_MAX = 5000;   // well under the ~8,190 characters at which a script arrived cut (the same limit as W7 and W2b)
-/** split items into runs whose script (build(run).length) stays <= max; an item over the limit on its own still goes alone (never dropped) */
+/**
+ * split items into runs whose script (build(run).length) stays <= max; an item over the limit on its own still goes alone (never dropped);
+ * order kept. Linear: each item's share is measured once (build([it]) - build([])), and every run is then measured
+ * EXACTLY with build(run); a run over max (an estimate that was short) is split in two and measured again.
+ */
 function chunkByScript(items, build, max = SCRIPT_MAX) {
-  const out = []; let cur = [];
-  for (const it of items) { if (cur.length && build([...cur, it]).length > max) { out.push(cur); cur = []; } cur.push(it); }
-  if (cur.length) out.push(cur);
+  if (!items.length) return [];
+  const base = build([]).length, cost = items.map((it) => build([it]).length - base), runs = []; let cur = [], len = base;
+  items.forEach((it, i) => { if (cur.length && len + cost[i] > max) { runs.push(cur); cur = []; len = base; } cur.push(it); len += cost[i]; });
+  if (cur.length) runs.push(cur);
+  const out = [], fit = (run) => { if (run.length > 1 && build(run).length > max) { const h = Math.ceil(run.length / 2); fit(run.slice(0, h)); fit(run.slice(h)); } else out.push(run); };
+  for (const r of runs) fit(r);
   return out;
 }
 /** remoteShas in chunks, each script <= SCRIPT_MAX (Map rel -> sha | null = absent); an ssh failure THROWS (fail-closed) */
@@ -411,7 +418,8 @@ function pushChunked(ssh, remoteData, files, { lock = null, lockWait = 60, max =
   const parts = chunkByScript(files, (run) => remotePushCommand(remoteData, run, { lock, lockWait }), max);
   let pushed = 0, chunks = 0;
   for (const part of parts) {
-    const r = pushRemote(ssh, remoteData, part, { lock, lockWait });
+    let r; try { r = pushRemote(ssh, remoteData, part, { lock, lockWait }); }
+    catch (e) { throw new Error(`${e.message} (chunk ${chunks + 1} of ${parts.length}; ${pushed} file(s) landed and were verified before it)`); }
     if (r.busy) return { busy: true, pushed, partial: pushed > 0, chunks };
     const after = remoteShasChunked(ssh, remoteData, part.map((f) => f.rel), { max });
     for (const f of part) if (after.get(f.rel) !== sha(f.data)) throw new Error(`push to ${remoteData}: ${f.rel} is not what was sent (chunk ${chunks + 1} of ${parts.length}; ${pushed} file(s) landed before it) — nothing more sent`);
