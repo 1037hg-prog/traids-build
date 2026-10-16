@@ -13,7 +13,7 @@ Since the sell repairs (R231 on 2026-10-12, R191 on 2026-10-14), R191 and R231 e
 | `r191-crypto-trend.json` | R191 (unit `w3-r191`) | R231 |
 | `r231-crypto-vote-sized.json` | R231 (unit `w3-r231`) | R191 |
 | `alpaca-mirror.jsonl`, `alpaca-mirror-exits.jsonl` | the board's mirror (`alpaca-mirror.js`, home until W5) | both |
-| `r191-crypto-trend.jsonl`, `r231-crypto-vote-sized.jsonl` | each runner (its own ledger: the client ids it has used) | itself only — carried into the shadow tree while that unit is home-owned |
+| `r191-crypto-trend.jsonl`, `r231-crypto-vote-sized.jsonl` | each runner (its own ledger: the client ids it has used) | itself only — carried into the shadow tree while that unit is home-owned. Read as leniently as the runner reads it: absent = a note, not carried; a bad line = carried as it is (noted); no final newline = mid-append now, not carried this run (exit 3) |
 
 If a runner cannot read one of these files, it treats it as unreadable: it makes no sell of that coin that run (R191 makes no sell of any coin) and exits 1. W3 moves `w3-r191` and `w3-r231` to the VPS one unit at a time (`docs/server/wave3-sleeves/manifests.cjs`). The board keeps writing its files at home. The W3 manifests do not carry any of these files, because each manifest names only its own unit's files and json inputs. `KNOWN_INPUTS` lists none for these two units, and the board's files are jsonl, which pull-server cannot treat as inputs. So without this job:
 
@@ -44,9 +44,28 @@ Each script stays under 5,000 characters. Switches (`r191-OFF`, `r231-OFF`, `*-H
 
 ## Checks (cloud, 2026-10-16)
 
-- `node docs/r191-r231-carry-job/2026-10-16/selftest.cjs` → `ALL 48 CASES PASSED`. The job is handed a fake `ssh` and `scp` as functions (`node fake-ssh.cjs`), never through PATH. The fakes run the job's real bash scripts against a temp folder and contact no host. **Linux only:** on Windows it refuses before running anything (a PATH fake would be skipped there and the real ssh.exe found).
+- `node docs/r191-r231-carry-job/2026-10-16/selftest.cjs` → `ALL 53 CASES PASSED`. The job is handed a fake `ssh` and `scp` as functions (`node fake-ssh.cjs`), never through PATH. The fakes run the job's real bash scripts against a temp folder and contact no host. **Linux only:** on Windows it refuses before running anything (a PATH fake would be skipped there and the real ssh.exe found).
+- Independent checker, cycle 2: 48/48, 52 of 58 meaningful mutations caught. It found one medium issue, R1: the ledgers were checked as strict jsonl although the runners read them leniently, so a single old torn line would have failed every night. It also found six lows:
+  - R2: the job's own ssh/scp wrappers were not exercised. The selftest now runs `sshReal` / `scpReal` themselves with `node <fake>` as the program.
+  - R3: the local temp files now go in a private `mkdtemp` folder, removed at the end.
+  - R4: the map is now re-checked just before the move ssh, not before the upload, and the temps are cleaned if it changed.
+  - R5: an unforeseen throw now still records exit 1 in the status file.
+  - R6: a failed move ssh now sends a cleanup ssh.
+  - R7: the test edits are now listed below.
+  All are fixed, with 5 new cases, and the matching mutations are caught.
 - Independent checker, cycle 1: 40/40 passed, 24 of 30 mutations caught, 10 defects (one critical: the PATH fakes on Windows). Every defect is fixed or documented below. The 8 missed or new mutations (chmod, move status, scp failure, home-side sha check, map re-check, SCRIPT_MAX, lock fault, ledgers) are now each caught.
 - `node deploy.cjs --plan`, `node rollback.cjs --dry` and `node record.cjs --dry` on the real tree: the file shows as `base` (absent), nothing changes.
+
+## Test edits (every change to an existing case, with its reason)
+
+- "ssh and scp on PATH are the FAKES" was merged into "the fake ssh refuses…", which is now a hard gate (exit 1 before any case). Reason: the fakes are no longer found on PATH (cycle 1 D1). Cycle 2 (R2) moved them again, into the job's own `sshReal` / `scpReal`.
+- Half-moved board: the case now expects only the board's two files in `refused`, and the state files still planned. Reason: cycle 1 D3 changed the behaviour from refusing everything.
+- Coins case: a coins ARRAY was added to the refused inputs (cycle 1 T5).
+- Shadow case and the expected counts (shadow carried 4 → 5, "already current" 7 → 8, plan lines 7 → 8, dry lines 7 → 8). Reason: each runner's own ledger is now carried into the shadow (cycle 1 D9).
+- Corrupt-scp case: the real tree is now seeded with R191's state, so MISMATCH is the only possible failure, and that is asserted (cycle 1 T1).
+- Map-changed case: "no scp" became "nothing moved, the temps removed". Reason: the map is now checked just before the move ssh, after the upload (cycle 2 R4).
+- Move-fails case: it now also asserts the cleanup ssh (cycle 2 R6).
+- No case was weakened, and the count only grew: 40 → 48 → 53.
 
 ## What is missing from this clean copy (not reconstructed)
 

@@ -44,6 +44,7 @@ const a = process.argv.slice(2); let i = 0; while (i < a.length && a[i].startsWi
 const local = a[i], dest = a[i + 1], m = /^([^:]+):(\\/.+)$/.exec(dest || "");
 fs.appendFileSync(log, JSON.stringify({ tool: "scp", local, dest }) + "\\n");
 if (!m) { console.error("fake scp: bad destination"); process.exit(1); }
+if (/[\\/]/.test(local) || !fs.existsSync(local)) { console.error("fake scp: the local file must be a bare name in the working folder: " + local); process.exit(1); }
 if (process.env.CARRY_FAKE_DOWN) process.exit(255);
 let b = fs.readFileSync(local); if (process.env.CARRY_FAKE_CORRUPT) b = Buffer.concat([b, Buffer.from("x")]);
 if (process.env.CARRY_FAKE_SCP_FAIL) { console.error("scp: write failed: disk full"); process.exit(1); }
@@ -55,8 +56,9 @@ process.env.CARRY_FAKE_ROOT = VPS; process.env.CARRY_FAKE_LOG = LOG;
 for (const k of ["CARRY_FAKE_DOWN", "CARRY_FAKE_CORRUPT", "CARRY_FAKE_SCP_FAIL"]) delete process.env[k];
 // the job's ssh / scp in every case: `node <fake>` (the same argument shapes as the real sshReal / scpReal)
 const OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20"];
-const fakeSsh = (script, { timeout = 120000 } = {}) => { const r = cp.spawnSync(process.execPath, [FSSH, ...OPTS, "traids", script], { encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024 }); return { ok: !r.error && r.status === 0, status: r.error ? null : r.status, out: r.stdout || "", err: String(r.stderr || "") }; };
-const fakeScp = (local, remote) => { const r = cp.spawnSync(process.execPath, [FSCP, "-B", "-q", ...OPTS, path.basename(local), `traids:${remote}`], { cwd: path.dirname(local), encoding: "utf8" }); return { ok: !r.error && r.status === 0, status: r.error ? null : r.status, err: String(r.stderr || "") }; };
+// the job's OWN wrappers (sshReal / scpReal, review cycle 2: so their arguments, the scp basename and cwd, are what is tested), each given
+// `node <fake>` as its program instead of ssh / scp
+const fakeSsh = C.sshReal("traids", [process.execPath, FSSH]), fakeScp = C.scpReal("traids", [process.execPath, FSCP]);
 
 const realDir = () => VPS + C.REAL, shadowDir = () => VPS + C.SHADOW;
 const calls = () => (fs.existsSync(LOG) ? fs.readFileSync(LOG, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
@@ -181,7 +183,7 @@ console.log("refusals and failures");
   freshVps(); fs.writeFileSync(path.join(realDir(), "r191-crypto-trend.json"), STATE191);
   const failMove = (script, o) => (/# carry:move/.test(script) ? { ok: false, status: 1, out: "", err: "bash: something broke" } : fakeSsh(script, o));
   const rm = go(home(map("server", "home")), { ssh: failMove });
-  ok("the move ssh fails: FAIL in each tree, nothing reported carried, exit 1", rm.exit === 1 && rm.lines.filter((l) => /^FAIL (real|shadow): ssh \(move\) exit 1/.test(l)).length === 2 && !rm.lines.some((l) => /^ok .* carried /.test(l)) && rm.carried.real.length === 0, rm.lines.join(" | "));
+  ok("the move ssh fails: FAIL in each tree, nothing reported carried, a cleanup ssh sent for each tree's temps, exit 1", calls().filter((x) => x.tool === "ssh" && /^cd .* && rm -f -- \.carry-in-/.test(x.script)).length === 2 && !leftovers().length && rm.exit === 1 && rm.lines.filter((l) => /^FAIL (real|shadow): ssh \(move\) exit 1/.test(l)).length === 2 && !rm.lines.some((l) => /^ok .* carried /.test(l)) && rm.carried.real.length === 0, rm.lines.join(" | "));
   // the VPS answers a CARRIED sha that is not what was sent: home's own check refuses it
   freshVps(); fs.writeFileSync(path.join(realDir(), "r191-crypto-trend.json"), STATE191);
   const lie = (script, o) => { const r = fakeSsh(script, o); if (/# carry:move/.test(script)) r.out = r.out.replace(/^CARRIED [0-9a-f]{64}(\s+alpaca-mirror\.jsonl)$/m, "CARRIED " + "0".repeat(64) + "$1"); return r; };
@@ -191,7 +193,7 @@ console.log("refusals and failures");
   freshVps(); fs.writeFileSync(path.join(realDir(), "r191-crypto-trend.json"), STATE191);
   const dm = home(map("server", "home")), cut = (script, o) => { const r = fakeSsh(script, o); if (/# carry:read/.test(script)) fs.writeFileSync(path.join(dm, "host-ownership.json"), JSON.stringify(map("server", "server"))); return r; };
   const rc = go(dm, { ssh: cut });
-  ok("home's map changed after the plan (a cutover meanwhile): NOTHING moved in either tree, no scp, exit 1 (review D2)", rc.exit === 1 && rc.lines.filter((l) => /host-ownership\.json changed since this run's plan/.test(l)).length === 2 && !calls().some((x) => x.tool === "scp") && fs.readdirSync(realDir()).join() === "r191-crypto-trend.json", rc.lines.join(" | "));
+  ok("home's map changed after the plan (a cutover meanwhile): checked just before each move ssh — NOTHING moved in either tree, the uploaded temps removed, exit 1 (review D2, cycle 2 R4)", rc.exit === 1 && rc.lines.filter((l) => /host-ownership\.json changed since this run's plan/.test(l)).length === 2 && fs.readdirSync(realDir()).filter((f) => !/\.flock$/.test(f)).join() === "r191-crypto-trend.json" && !leftovers().length, rc.lines.join(" | "));
   // a move script over the limit is refused BEFORE anything is uploaded; a read script over it, before any ssh
   freshVps(); fs.writeFileSync(path.join(realDir(), "r191-crypto-trend.json"), STATE191);
   const rx = go(home(map("server", "home")), { scriptMax: 1200 }), cx = calls();
@@ -207,6 +209,21 @@ console.log("refusals and failures");
   freshVps(); fs.writeFileSync(path.join(realDir(), "r191-crypto-trend.json"), STATE191);
   const dh = home(map("server", "home", { "w5-board": "home", "w5-chain": "server" })), rh = go(dh);
   ok("the board half moved: R231's state carried to the real tree, the board's files NOT (exit 1, each named)", rh.exit === 1 && rd(path.join(realDir(), "r231-crypto-vote-sized.json")) === STATE231 && !fs.existsSync(path.join(realDir(), "alpaca-mirror.jsonl")) && rh.lines.filter((l) => /^REFUSED alpaca-mirror.*half moved/.test(l)).length === 2, rh.lines.join(" | "));
+  // the runners' own ledgers are read as leniently as the runners read them (review cycle 2 R1)
+  freshVps(); fs.writeFileSync(path.join(realDir(), "r191-crypto-trend.json"), STATE191);
+  const r10 = go(home(map("server", "home"), { "r231-crypto-vote-sized.jsonl": null }));
+  ok("R231's ledger absent at home (no order yet): a note, not carried, and the run is still exit 0", r10.exit === 0 && r10.lines.some((l) => /^note r231-crypto-vote-sized\.jsonl: absent/.test(l)) && !fs.existsSync(path.join(shadowDir(), "r231-crypto-vote-sized.jsonl")), r10.lines.join(" | "));
+  freshVps(); fs.writeFileSync(path.join(realDir(), "r191-crypto-trend.json"), STATE191);
+  const r11 = go(home(map("server", "home"), { "r231-crypto-vote-sized.jsonl": LED231 + "torn{\n" + LED231 }));
+  ok("a ledger with a bad line (an old torn append): carried as it is with a note (the runner skips such lines), exit 0", r11.exit === 0 && rd(path.join(shadowDir(), "r231-crypto-vote-sized.jsonl")) === LED231 + "torn{\n" + LED231 && r11.lines.some((l) => /1 line\(s\) that are not JSON/.test(l)), r11.lines.join(" | "));
+  freshVps(); fs.writeFileSync(path.join(realDir(), "r191-crypto-trend.json"), STATE191);
+  const r12 = go(home(map("server", "home"), { "r231-crypto-vote-sized.jsonl": LED231 + '{"half":' }));
+  ok("a ledger with no final newline (mid-append now): not carried this run, WARN exit 3, the rest carried", r12.exit === 3 && !fs.existsSync(path.join(shadowDir(), "r231-crypto-vote-sized.jsonl")) && rd(path.join(realDir(), "alpaca-mirror.jsonl")) === MIR, r12.lines.join(" | "));
+  // an unforeseen throw (here: the local temp folder cannot be made) still records exit 1 (review cycle 2 R5)
+  freshVps(); fs.writeFileSync(path.join(realDir(), "r191-crypto-trend.json"), STATE191);
+  const d13 = home(map("server", "home")), r13 = go(d13, { tmpDir: path.join(TMP, "no", "such", "folder") }), st13 = JSON.parse(rd(path.join(d13, "r191-r231-carry-status.json")) || "null");
+  ok("a local failure mid-run (the temp folder cannot be made): exit 1, and the status file records it", r13.exit === 1 && st13 && st13.exit === 1 && /the run stopped/.test(st13.lines[st13.lines.length - 1]), r13.lines.slice(-2).join(" | "));
+  ok("the local temp files live in a private folder that is removed at the end (nothing left in the temp base)", !fs.readdirSync(TMP).some((f) => /^carry-/.test(f)));
   // an early refusal still writes the status (so --status never shows an older success)
   const st6 = JSON.parse(rd(path.join(dh, "r191-r231-carry-status.json")) || "null");
   const de = home(map("server", "home")); process.env.CARRY_FAKE_DOWN = "1"; const re_ = go(de); delete process.env.CARRY_FAKE_DOWN;

@@ -65,8 +65,10 @@ const FILES = [
   { file: "alpaca-mirror.jsonl", owner: BOARD, readers: ["w3-r191", "w3-r231"], kind: "jsonl" },
   { file: "alpaca-mirror-exits.jsonl", owner: BOARD, readers: ["w3-r191", "w3-r231"], kind: "jsonl" },
   // each runner's OWN ledger (the client ids it has used): read only by itself, so carried only into the SHADOW tree while it is home-owned
-  { file: "r191-crypto-trend.jsonl", owner: "w3-r191", readers: [], kind: "jsonl" },
-  { file: "r231-crypto-vote-sized.jsonl", owner: "w3-r231", readers: [], kind: "jsonl" },
+  // kind "ledger": read as leniently as the runners read it (they skip a bad line and accept no file): absent = not carried (a note), a bad
+  // line = carried as it is (noted), no final newline = mid-append now: not carried this run (WARN)
+  { file: "r191-crypto-trend.jsonl", owner: "w3-r191", readers: [], kind: "ledger" },
+  { file: "r231-crypto-vote-sized.jsonl", owner: "w3-r231", readers: [], kind: "ledger" },
 ];
 const SCRIPT_MAX = 5000, LOCK_WAIT = 120;
 const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
@@ -106,6 +108,7 @@ function planCarry(map) {
 
 /** validate home's bytes of a carried file (null = fine, else why) */
 function invalid(f, buf) {
+  if (f.kind === "ledger") return buf != null && buf.length && buf[buf.length - 1] !== 0x0a ? "does not end in a newline (mid-append now?)" : null;
   if (buf == null) return "absent at home";
   const t = buf.toString("utf8");
   if (f.kind === "state") { let j; try { j = JSON.parse(t); } catch (e) { return `does not parse (${e.message.slice(0, 60)})`; } return j && j.coins && typeof j.coins === "object" && !Array.isArray(j.coins) ? null : "has no coins table"; }
@@ -146,16 +149,17 @@ function moveScript(dir, run, items, lockWait = LOCK_WAIT) {
 
 // ── ssh / scp (real) ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 const OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"];
-function sshReal(host = HOST) {
+/** bin: the program and any leading arguments (["ssh"]; the selftest passes [node, fake-ssh.cjs] so these very wrappers are what it runs) */
+function sshReal(host = HOST, bin = ["ssh"]) {
   return (script, { timeout = 300000 } = {}) => {
-    const r = cp.spawnSync("ssh", [...OPTS, host, script], { encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+    const r = cp.spawnSync(bin[0], [...bin.slice(1), ...OPTS, host, script], { encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
     return { ok: !r.error && r.status === 0, status: r.error ? null : r.status, out: r.stdout || "", err: String(r.stderr || "") + (r.error ? " " + r.error.message : "") };
   };
 }
-function scpReal(host = HOST) {
+function scpReal(host = HOST, bin = ["scp"]) {
   return (local, remote, { timeout = 300000 } = {}) => {
     // run from the local file's folder and name it by its basename: a Windows path ("C:\\...") is never taken for host:path
-    const r = cp.spawnSync("scp", ["-B", "-q", ...OPTS, path.basename(local), `${host}:${remote}`], { cwd: path.dirname(local), encoding: "utf8", timeout, windowsHide: true });
+    const r = cp.spawnSync(bin[0], [...bin.slice(1), "-B", "-q", ...OPTS, path.basename(local), `${host}:${remote}`], { cwd: path.dirname(local), encoding: "utf8", timeout, windowsHide: true });
     return { ok: !r.error && r.status === 0, status: r.error ? null : r.status, err: String(r.stderr || "") + (r.error ? " " + r.error.message : "") };
   };
 }
@@ -165,18 +169,25 @@ function scpReal(host = HOST) {
  * -> { exit, lines, plan, carried: { real: [...], shadow: [...] } }
  */
 function run(deps = {}) {
-  const homeData = deps.homeData, mode = deps.mode || "carry", lines = [], say = (s) => lines.push(s), carried = { real: [], shadow: [] };
+  const st = { lines: [], carried: { real: [], shadow: [] }, tdir: null };
+  try { return runInner(deps, st); }
+  catch (e) {   // anything unforeseen (a local write failing, ...) still ends in a recorded exit 1
+    st.lines.push(`FAILED: ${String(e.message).split("\n")[0].slice(0, 200)} — the run stopped`);
+    writeStatus(deps, 1, st);
+    return { exit: 1, lines: st.lines, plan: null, carried: st.carried };
+  } finally { if (st.tdir) fs.rmSync(st.tdir, { recursive: true, force: true }); }
+}
+function writeStatus(deps, exit, st) {
+  if ((deps.mode || "carry") !== "carry" || !deps.statusFile) return;
+  const repo = findRepo(__dirname) || findRepo(path.dirname(deps.statusFile));
+  const rec = { schema: "r191-r231-carry-status-v1", at: (deps.now ? deps.now() : new Date()).toISOString(), exit, carried: st.carried, lines: st.lines };
+  try { const w = deps.writeJson || (repo ? require(path.join(repo, "backend", "lib", "atomic-write.js")).writeJsonAtomic : null); if (w) w(deps.statusFile, rec); } catch (e) { st.lines.splice(st.lines.length - 1, 0, `note the status file could not be written (${e.message.slice(0, 80)})`); }
+}
+function runInner(deps, st) {
+  const homeData = deps.homeData, mode = deps.mode || "carry", lines = st.lines, say = (s) => lines.push(s), carried = st.carried;
   const mapFile = path.join(homeData, "host-ownership.json");
   // every carry-mode exit records its result (an early refusal too, so --status never shows an older run's success)
-  const done = (exit, why) => {
-    if (why) say(why);
-    if (mode === "carry" && deps.statusFile) {
-      const repo = findRepo(__dirname) || findRepo(path.dirname(deps.statusFile));
-      const rec = { schema: "r191-r231-carry-status-v1", at: (deps.now ? deps.now() : new Date()).toISOString(), exit, carried, lines };
-      try { const w = deps.writeJson || (repo ? require(path.join(repo, "backend", "lib", "atomic-write.js")).writeJsonAtomic : null); if (w) w(deps.statusFile, rec); } catch (e) { lines.splice(lines.length - 1, 0, `note the status file could not be written (${e.message.slice(0, 80)})`); }
-    }
-    return { exit, lines, plan, carried };
-  };
+  const done = (exit, why) => { if (why) say(why); writeStatus(deps, exit, st); return { exit, lines, plan, carried }; };
   let plan = null, map = null, mapBuf = null;
   try { mapBuf = fs.readFileSync(mapFile); map = JSON.parse(mapBuf.toString("utf8")); } catch (e) { return done(1, `REFUSED: home's backend/data/host-ownership.json cannot be read (${String(e.message).slice(0, 80)}) — nothing carried`); }
   plan = planCarry(map);
@@ -186,27 +197,35 @@ function run(deps = {}) {
   if (plan.retired) return done(0, "RETIRED: w3-r191, w3-r231 and the board are all server-owned — nothing to carry (remove this job's schedule)");
   for (const t of TREES) for (const i of plan[t.id]) say(`plan ${t.id.padEnd(6)} ${i.file} <- ${i.from === "home" ? "home" : "the VPS's real tree"}`);
   // home's bytes, validated
-  const local = new Map(); let bad = 0;
+  const local = new Map(); let bad = 0, warnPre = 0;
   for (const f of FILES) {
     if (!TREES.some((t) => plan[t.id].some((i) => i.file === f.file && i.from === "home"))) continue;
     let buf = null; try { buf = fs.readFileSync(path.join(homeData, f.file)); } catch { buf = null; }
-    const why = invalid(f, buf); if (why) { bad++; say(`REFUSED ${f.file}: ${why} — not carried`); continue; }
+    const why = invalid(f, buf);
+    if (f.kind === "ledger") {
+      if (buf == null) { say(`note ${f.file}: absent at home (no order yet) — not carried`); continue; }
+      if (why) { warnPre++; say(`WARN ${f.file}: ${why} — not carried this run`); continue; }
+      const badL = buf.toString("utf8").split("\n").filter((l) => l.trim()).filter((l) => { try { JSON.parse(l); return false; } catch { return true; } }).length;
+      if (badL) say(`note ${f.file}: ${badL} line(s) that are not JSON — carried as they are (the runner skips such lines)`);
+      local.set(f.file, buf); continue;
+    }
+    if (why) { bad++; say(`REFUSED ${f.file}: ${why} — not carried`); continue; }
     local.set(f.file, buf);
   }
   bad += plan.refused.length;
-  if (mode === "plan") return done(bad ? 1 : 0, bad ? "PLAN: a file would be refused (above)" : "PLAN: nothing sent (no ssh)");
+  if (mode === "plan") return done(bad ? 1 : warnPre ? 3 : 0, bad ? "PLAN: a file would be refused (above)" : "PLAN: nothing sent (no ssh)");
   // what is on the VPS now (one read-only ssh)
   const ssh = deps.ssh || sshReal(), scp = deps.scp || scpReal();
   const ask = [...new Set(TREES.flatMap((t) => plan[t.id].flatMap((i) => [`${t.dir}/${i.file}`, ...(i.from === "real" ? [`${REAL}/${i.file}`] : [])])))];
   const scriptMax = deps.scriptMax || SCRIPT_MAX;
-  if (!ask.length) return done(bad ? 1 : 0, bad ? `FAILED: ${bad} file(s) not carried (above)` : "nothing to carry");
+  if (!ask.length) return done(bad ? 1 : warnPre ? 3 : 0, bad ? `FAILED: ${bad} file(s) not carried (above)` : "nothing to carry");
   const rs = readScript(ask); if (rs.length > scriptMax) return done(1, `REFUSED: the read script is ${rs.length} characters (max ${scriptMax})`);
   const r = ssh(rs, { timeout: 60000 });
   if (!r.ok) return done(1, `FAILED: ssh (read) ${r.status == null ? "failed" : "exit " + r.status}: ${String(r.err).trim().slice(0, 200)} — nothing carried`);
   const cur = new Map();
   for (const l of String(r.out).split("\n").filter(Boolean)) { const x = /^([0-9a-f]{64}|ABSENT)\s+\*?(\/.+)$/.exec(l.trim()); if (!x) return done(1, `FAILED: unexpected reply ${JSON.stringify(l.slice(0, 80))}`); cur.set(x[2], x[1] === "ABSENT" ? null : x[1]); }
   for (const p of ask) if (!cur.has(p)) return done(1, `FAILED: no answer for ${p}`);
-  let warn = 0, fail = bad;
+  let warn = warnPre, fail = bad;
   const run_ = `${(deps.now ? deps.now() : new Date()).toISOString().replace(/\D/g, "").slice(0, 14)}-${process.pid}`;
   for (const t of TREES) {
     const items = [];
@@ -218,21 +237,23 @@ function run(deps = {}) {
     if (mode === "dry") { for (const i of items) say(`DRY  ${t.id.padEnd(6)} would carry ${i.file} <- ${i.from === "home" ? "home" : "the real tree"}`); continue; }
     const lw = deps.lockWait || LOCK_WAIT, ms = moveScript(t.dir, run_, items, lw);
     if (ms.length > scriptMax) { fail++; say(`FAIL ${t.id}: the move script is ${ms.length} characters (max ${scriptMax}) — nothing sent to this tree`); continue; }
-    // the map again, just before this tree's move: a cutover since the plan was made could have given a file's owner to the server
-    let now = null; try { now = fs.readFileSync(mapFile); } catch { now = null; }
-    if (!now || !now.equals(mapBuf)) { fail++; say(`FAIL ${t.id}: home's host-ownership.json changed since this run's plan — nothing moved in this tree (run again)`); continue; }
     // upload home's bytes to temp names in the target folder
     let upFail = null;
     for (const i of items.filter((x) => x.from === "home")) {
-      const lf = path.join(deps.tmpDir || os.tmpdir(), `carry-${run_}-${i.file}`);
+      if (!st.tdir) st.tdir = fs.mkdtempSync(path.join(deps.tmpDir || os.tmpdir(), "carry-"));   // private: its own folder, removed at the end
+      const lf = path.join(st.tdir, i.file);
       fs.writeFileSync(lf, local.get(i.file));
       try { const u = scp(lf, `${t.dir}/.carry-in-${run_}-${i.file}`); if (!u.ok) { upFail = `scp ${i.file}: ${u.status == null ? "failed" : "exit " + u.status} ${String(u.err).trim().slice(0, 160)}`; break; } }
       finally { fs.rmSync(lf, { force: true }); }
     }
-    if (upFail) { fail++; say(`FAIL ${t.id}: ${upFail} — nothing moved in this tree`); ssh(`cd ${q(t.dir)} && rm -f -- .carry-in-${run_}-*`, { timeout: 60000 }); continue; }
+    const cleanup = () => ssh(`cd ${q(t.dir)} && rm -f -- .carry-in-${run_}-*`, { timeout: 60000 });
+    if (upFail) { fail++; say(`FAIL ${t.id}: ${upFail} — nothing moved in this tree`); cleanup(); continue; }
+    // the map again, just before this tree's move: a cutover since the plan was made could have given a file's owner to the server
+    let now = null; try { now = fs.readFileSync(mapFile); } catch { now = null; }
+    if (!now || !now.equals(mapBuf)) { fail++; say(`FAIL ${t.id}: home's host-ownership.json changed since this run's plan — nothing moved in this tree (run again)`); cleanup(); continue; }
     const m = ssh(ms, { timeout: (lw * 4 + 120) * 1000 });
     if (m.status === 75) { warn++; say(`WARN ${t.id}: a unit's lock was busy past ${lw}s — nothing moved in this tree; carried next run`); continue; }
-    if (!m.ok || !/^DONE$/m.test(String(m.out))) { fail++; say(`FAIL ${t.id}: ssh (move) exit ${m.status}: ${String(m.err || m.out).trim().slice(0, 200)}`); continue; }
+    if (!m.ok || !/^DONE$/m.test(String(m.out))) { fail++; say(`FAIL ${t.id}: ssh (move) exit ${m.status}: ${String(m.err || m.out).trim().slice(0, 200)}`); cleanup(); continue; }
     const got = new Map([...String(m.out).matchAll(/^CARRIED ([0-9a-f]{64})\s+(\S+)$/gm)].map((x) => [x[2], x[1]]));
     for (const x of String(m.out).matchAll(/^(TORN|NOSOURCE) (\S+)$/gm)) { warn++; say(`WARN ${t.id.padEnd(6)} ${x[2]}: ${x[1] === "TORN" ? "the real tree's copy was mid-append (no final newline)" : "absent in the real tree"} — not copied this run`); }
     for (const i of items) {
