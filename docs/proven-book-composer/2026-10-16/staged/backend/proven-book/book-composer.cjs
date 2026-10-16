@@ -17,13 +17,15 @@
  *     order), then each sleeve's own rank, then symbol. Held dip positions are never cut by the composer (only their own exits close them).
  *   - R180 TAKES WHAT IS LEFT up to its targetUsd and YIELDS to dip-buys: when tonight's dip entries need room, the IEF position is trimmed
  *     (config.r180YieldsToDips, default true) — it is the one sleeve sized to fit; it is never grown past targetUsd.
- *   - IDLE CASH IS OFFERED to the second layer (the Stacker): offer = min(cash after the plan, cap room after the plan) - reserveUsd, never
- *     below 0. The composer only states the offer; the Stacker's own rule (registered at home) decides whether and how to use it, and its
+ *   - IDLE CASH IS OFFERED to the second layer (the Stacker): offer = min(cap room after the plan, cash after the plan - R180 hold-back)
+ *     - reserveUsd, never below 0. The composer only states the offer; the Stacker's own rule (registered at home) decides whether and how to use it, and its
  *     positions come back as held positions of sleeve "stacker" the next night (then they count against the cap like any other, and they
  *     are what yields FIRST when a dip entry, or R180's window, needs room: config.stackerYields, default true). In a CASH account
- *     (countExitProceeds false) a Stacker sale frees cap room tonight but cash only tomorrow: the offer therefore holds back reserveUsd (set
- *     it to the dips' usual nightly demand) and, on the night before R180's window opens, R180's missing amount; the Stacker should hold
- *     instruments that can be sold at the close.
+ *     (countExitProceeds false) a Stacker sale frees cap room tonight but cash only tomorrow: so whenever R180 holds tomorrow (wantNext) and
+ *     is short, the Stacker is sold TONIGHT for tomorrow and R180's remaining need is held back from the offer; reserveUsd is held back for
+ *     tomorrow's dips (set it from R353 to their usual nightly demand — it protects R180 too, since dips come first). In a cash account the
+ *     second layer can still crowd out dips beyond the reserve (NOTES gives the measured rates). The Stacker should hold instruments that
+ *     can be sold at the close.
  *   - OVER THE CAP before any buy (held positions grew, or equity fell): the Stacker, then R180, are cut back toward the cap; held dip positions
  *     are never cut, and nothing is bought while they alone are over it.
  *   - Integer shares: a dip entry buys floor(slotUsd / price) shares (0 shares = skipped); IEF floor((target) / price).
@@ -103,7 +105,8 @@ function checkNightly(n) {
     for (const [k, en] of x.entries.entries()) if (!en || typeof en !== "object" || typeof en.sym !== "string" || !en.sym || (en.rank != null && !fin(en.rank))) e(`intents.${s}.entries[${k}]: { sym, rank? (a number) }`);
     for (const [k, sym] of x.exits.entries()) if (typeof sym !== "string" || !sym) e(`intents.${s}.exits[${k}]: a symbol`);
   }
-  if (!I[CAL] || !(typeof I[CAL].want === "boolean" || Array.isArray(I[CAL].monthSessions))) e(`intents.${CAL}: want (true/false) or monthSessions (+ closedWeekdays)`);
+  if (!I[CAL] || !(typeof I[CAL].want === "boolean" || Array.isArray(I[CAL].monthSessions))) e(`intents.${CAL}: want (true/false) + wantNext, or monthSessions (+ closedWeekdays)`);
+  if (I[CAL] && typeof I[CAL].want === "boolean" && I[CAL].wantNext != null && typeof I[CAL].wantNext !== "boolean") e(`intents.${CAL}.wantNext: true or false`);
   if (bad.length) throw new Error("tonight's input is refused:\n  - " + bad.join("\n  - "));
   return n;
 }
@@ -127,13 +130,19 @@ function compose(nightly, config) {
     orders.push({ sleeve: s, sym, side: "sell", qty: p.qty, estUsd: r2(p.usd), why: "its rule's exit" }); pending += p.usd; pos.delete(k);
   }
   // 2. R180's wanted state tonight
-  const cal = C.sleeves[CAL], win = typeof N.intents[CAL].want === "boolean" ? { want: N.intents[CAL].want, wantNext: null } : r180Window(N.asOf, N.intents[CAL].monthSessions, N.intents[CAL].closedWeekdays || []), want = win.want;
+  // a bare `want` in a CASH account must also say wantNext (checker cycle 4, M1): without it, tomorrow's R180 cannot be prepared for (step 5)
+  if (typeof N.intents[CAL].want === "boolean" && typeof N.intents[CAL].wantNext !== "boolean" && !C.countExitProceeds)
+    throw new Error(`intents.${CAL}: a cash account (countExitProceeds false) needs wantNext beside want, or the month calendar — without it the Stacker could keep R180 out of its window`);
+  const cal = C.sleeves[CAL], win = typeof N.intents[CAL].want === "boolean" ? { want: N.intents[CAL].want, wantNext: typeof N.intents[CAL].wantNext === "boolean" ? N.intents[CAL].wantNext : null } : r180Window(N.asOf, N.intents[CAL].monthSessions, N.intents[CAL].closedWeekdays || []), want = win.want;
   const calKey = CAL + " " + cal.sym, calHeld = pos.get(calKey);
   const gross = () => [...pos.values()].reduce((a, p) => a + p.qty * px(p.sym), 0);
   const spendable = () => cash + (C.countExitProceeds ? pending : 0);
   const room = () => Math.min(capUsd - gross(), spendable());
   // when R180 is not wanted, it is sold first (its proceeds behave like any exit's)
   if (calHeld && !want) { orders.push({ sleeve: CAL, sym: cal.sym, side: "sell", qty: calHeld.qty, estUsd: r2(calHeld.qty * px(cal.sym)), why: "R180 window closed" }); pending += calHeld.qty * px(cal.sym); pos.delete(calKey); }
+  // R180 above its target is trimmed FIRST (before any dip yield), so its excess funds tonight and is never offered back after a Stacker sale
+  // (checker cycle 4, L4)
+  if (want && pos.get(calKey)) { const p0 = pos.get(calKey), pr = px(cal.sym), tq = Math.floor(cal.targetUsd / pr); if (p0.qty > tq) { const q = p0.qty - tq; orders.push({ sleeve: CAL, sym: cal.sym, side: "sell", qty: q, estUsd: r2(q * pr), why: "R180 above its target" }); pending += q * pr; if (tq) p0.qty = tq; else pos.delete(calKey); } }
   // 2b. OVER THE CAP before any buy (held positions grew, or equity fell): the yielding layers are cut back toward the cap — the Stacker
   //     first, then R180 — whatever the yield flags (a cap is a cap). Held dip positions are never cut: only their own exits close them;
   //     until then nothing is bought.
@@ -218,7 +227,8 @@ function compose(nightly, config) {
   let holdBackR180 = 0;
   if (!C.countExitProceeds && win.wantNext === true) {
     const price = px(cal.sym), calNow = [...pos.values()].filter((p) => p.sleeve === CAL).reduce((a, p) => a + p.qty * px(p.sym), 0);
-    const need = fin(price) && price > 0 ? Math.floor(cal.targetUsd / price) * price - calNow : 0;
+    if (!(fin(price) && price > 0)) throw new Error(`no price tonight for ${cal.sym}: R180 holds from tomorrow and its need cannot be sized (checker cycle 4, L3)`);
+    const need = Math.floor(cal.targetUsd / price) * price - calNow;   // sized at tonight's close: an overnight IEF fall can leave R180 a few shares short (NOTES)
     if (need > EPS) {
       const tomorrowCash = cash + pending - C.reserveUsd;
       if (C.stackerYields && need - tomorrowCash > EPS && [...pos.values()].some((p) => p.sleeve === STACKER)) { const f = yieldFrom(STACKER, need - tomorrowCash, "tomorrow's R180 window (a cash account: tonight's sale settles by then)"); pending += f; }

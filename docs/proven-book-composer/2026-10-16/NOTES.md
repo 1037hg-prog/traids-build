@@ -21,12 +21,22 @@ It is the **composer only**. It never decides a sleeve's rule, never registers a
   - When a dip entry needs room, R180 **yields**: it is trimmed by whole shares (`r180YieldsToDips`, default true).
   - A yield is made only if the entry then fits at full size.
 - **Idle cash is offered to the second layer** (the Stacker): offer = min(cap room, cash) − `reserveUsd`, never below 0.
-  - The Stacker's positions come back as sleeve `stacker` the next night. They count against the cap, and they yield **first** when a dip needs room (`stackerYields`, default true). The second layer never crowds out the first.
+  - The Stacker's positions come back as sleeve `stacker` the next night. They count against the cap, and they yield **first** when a dip or R180 needs room (`stackerYields`, default true).
+  - **With proceeds counting**, the second layer never crowds out the first (0 cases in the checker's month-long simulations).
+  - **In a cash account** it can, beyond what `reserveUsd` holds back: the money in the Stacker is not settled until the day after it is sold. Cycle 4's simulation (20 seeds × 12 months, a Stacker that always takes the whole offer) measured, at cap 1:
+
+    | `reserveUsd` | dip entries lost to the Stacker | R180 window nights at target |
+    |---|---|---|
+    | 0 | 6,775 lost vs 2,371 bought | 485 / 1,200 |
+    | $10,000 | 2,799 lost vs 5,803 bought | 1,087 / 1,200 |
+    | $20,000 | 940 lost vs 7,368 bought | 1,178 / 1,200 |
+
+    **The reserve is the operator's lever.** Set it from R353, or run the account with proceeds counting if the broker allows.
 - **Over the cap before any buy** (held positions grew, or equity fell): the Stacker, then R180, are cut back toward the cap. Held dips are never cut, and nothing is bought while they alone are over the cap.
 
 ## Checks (cloud, 2026-10-16)
 
-`node docs/proven-book-composer/2026-10-16/selftest.cjs` → `ALL 67 CASES PASSED`. The sizes in it are FIXTURE values, plainly not R353's. It covers:
+`node docs/proven-book-composer/2026-10-16/selftest.cjs` → `ALL 75 CASES PASSED`. The sizes in it are FIXTURE values, plainly not R353's. It covers:
 
 - R180's window (known answer, October 2026) and R180 via monthSessions.
 - Known plans: empty book, full-slot entries in priority order, whole shares, exits, ignored exits, unsettled proceeds.
@@ -50,7 +60,7 @@ Cycle 1 result: 37/37 passed and 27 of 31 mutations were caught. No-margin, the 
 - **D7 — temp folders.** The temp folder `aw.cjs` makes is removed.
 - **D8 (open question) — when the plan fills.** The plan assumes every order fills at `asOf`'s close (all the rules are close-to-close). **Confirm at home** that the proven book executes it at that close. If it runs a session later, every sleeve shifts by one session, R180's window included.
 
-No case was removed or weakened (37 → 45). The equivalent mutant M24 (`r180YieldsToDips` ignored while the Stacker covers the need) stays uncatchable by design.
+No case was removed or weakened (37 → 45). (Cycle 4 later showed this mutant is not fully equivalent; see cycle 4 below.)
 
 ## Changes after checker cycle 2
 
@@ -59,7 +69,7 @@ Cycle 2 result: no regressions. 540,000 boundary nights matched an exact-arithme
 - **X1 (medium) — the Stacker could crowd out the first layer.** In a cash account a Stacker sale frees cap room tonight but cash only tomorrow.
   - The Stacker now also **yields to R180's buy-up** (for cash too when proceeds count).
   - In a cash account, whenever R180 will hold tomorrow and is short, the Stacker is sold tonight for tomorrow and R180's remaining need is held back from the offer (cycle 3 below). The plan shows it as `offer.heldBackForR180Usd`.
-  - Tomorrow's **dip** demand cannot be known tonight. **Set `reserveUsd` from R353 to the dips' usual nightly demand.** The Stacker should hold instruments that can be sold at the close.
+  - Tomorrow's **dip** demand cannot be known tonight. **Set `reserveUsd` from R353 to the dips' usual nightly demand.** It protects R180 as well, because dips come first. The Stacker should hold instruments that can be sold at the close.
   - The "R180 below target" note now names the real cause.
 - **X2 / X3 — the month calendar.** R180's input is now the month's **whole calendar**: `monthSessions` plus `closedWeekdays` (holidays). Together they must cover every weekday of the month exactly once. A "sessions so far" list, a weekend date, an empty list or a non-date is refused. Known answers: October 2026, and May 2021 with Memorial Day on the 31st.
 - **X4 — test gaps.** New cases cover an exact fit that needs a yield (found by search against a raw comparison), exit validation, and `aw.cjs` leaving no temp folder.
@@ -86,6 +96,24 @@ Test edits, with reasons:
 - **The invariant's offer formula** now includes the hold-back, and the yield invariant names the new R180 yields.
 
 No case was removed (56 → 67).
+
+## Changes after checker cycle 4
+
+Cycle 4 result: no regressions. There were 0 cap or margin breaches and 0 spends of unsettled cash across 360,000 reference nights and the month-long simulations; 57 of 67 mutants were killed. Its findings:
+
+- **M1 (medium) — the cycle-3 fix did not cover a bare `want`.** When R180 was given as `want` without the calendar, step 5 never ran. A cash account now **refuses** a bare `want` unless `wantNext` (true/false) is given beside it, or the month calendar is used. Known answer: `want: false, wantNext: true` sells $50,000 of the Stacker tonight for tomorrow.
+- **M2 — step-5 gaps.** Known answers added for: a reserve plus a Stacker sale for tomorrow ($60,000 sold); `stackerYields: false` holding in step 5; tonight's exit proceeds counting as tomorrow's cash ($20,000 sold); an IEF price that does not divide the target (whole shares).
+- **L3 — silent missing price.** A missing IEF price on a night before R180 holds is now refused; it used to be silently sized at 0.
+- **L4 — same-night churn.** R180 above its target is trimmed **first**, before any dip yield, so its excess funds the dip and is never offered back after a Stacker sale.
+- **L5 — overnight IEF moves (documented, not changed).** Step 5 sizes the sale at tonight's IEF close. If IEF falls overnight, R180 can end 1–5 shares short; the checker traced every such case to this.
+- **L6 — docs.** The header and NOTES now describe step 5 and the offer formula as coded. The crowd-out claim is corrected (figures above). M22 (`r180YieldsToDips` ignored in the `fits` sum) is **not** fully equivalent: the reference found 48 differences in 60,000 nights. It is listed as a residual gap.
+
+Test edits, with reasons:
+
+- **Every fixture that gives R180 as `want` now also gives `wantNext: false` (26 places).** Reason: M1 makes a cash account refuse a bare `want`. `wantNext: false` keeps each fixture's meaning: no window tomorrow, no hold-back.
+- **The random nights give `wantNext`** (true in 30% of cases) beside `want`, so step 5 is also fuzzed without a calendar.
+
+No case was removed (67 → 75).
 
 ## Missing from this clean copy (not reconstructed)
 
