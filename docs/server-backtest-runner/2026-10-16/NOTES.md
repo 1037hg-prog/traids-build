@@ -19,7 +19,7 @@ Three NEW files. No live file is edited, so `base/` holds no copy:
     - the corrected matched placebo (paired t), the drift-kept floor, the leak test (drift-free shuffles, t < 2), the positive control (own winners, t ≥ 3), the bar, the gates and the verdict;
     - `seal.sha256` over the canonical JSON.
   - The file is written once (an existing `--out` is refused) through `backend/lib/atomic-write.js`, then set to 0444.
-  - **Governance:** a rule without `registration` runs only with `--exploratory`, and its file and verdict say EXPLORATORY. A registered rule must carry its registered `bar.tRequired`, which is used as given and never recomputed. The runner never reads or writes the registry.
+  - **Governance:** a rule without `registration` runs only with `--exploratory`, and its file and verdict say EXPLORATORY. A registered rule must carry its registered `bar.tRequired` (used as given, never recomputed) and a `window.lastBar` at most 10 days after `window.to`, frozen at registration. The runner never reads or writes the registry.
 - **`backend/bt/rules/dip-ibs-country-etfs.json`** — the **first use**, written by `make-rules.cjs` through `writeJsonAtomic`. It is R313's IBS rule, unchanged (entry IBS < 0.1, exit IBS > 0.9, one position per ETF, no stop), on **24 single-country ETFs** that are in none of the family's registered universes: EWZ EWW EWY EWT EWH EWS EWL EWP EWQ EWI EWN EWD EWK EWO EWM EZA ECH TUR THD EIDO EPHE INDA FXI ENZL.
   - Costs are 0.12% round trip (country ETFs are wider than R313's), with stress at 0.24%.
   - Placebo 500 draws (seed 313), floor 60 seeds, leak seeds 1 and 2, gates ≥ 100 trades and ≥ 36 months.
@@ -27,11 +27,11 @@ Three NEW files. No live file is edited, so `base/` holds no copy:
 
 ## Checks (cloud, 2026-10-16)
 
-`node docs/server-backtest-runner/2026-10-16/selftest.cjs` → `ALL 72 CASES PASSED`, using synthetic bars only. It covers:
+`node docs/server-backtest-runner/2026-10-16/selftest.cjs` → `ALL 86 CASES PASSED`, using synthetic bars only. It covers:
 
 - **Verbatim reuse:** 20 functions identical to r313's text.
 - **Hand-computed known answer:** two trades at chosen closes, net = gross − 0.06% exactly, the month mean, an open trade not counted, NW t on [1%, 2%, −0.5%, 1.5%] = 3.5777, and the time cap.
-- **Planted edge:** +0.8% bounce after IBS < 0.1, 10 symbols × 8 years → **PASS** (t ≈ 16, placebo paired t ≈ 8.5, floor clears, leak and positive control pass).
+- **Planted edge:** +0.8% bounce after IBS < 0.1, 10 symbols × 8 years → **PASS** (t ≈ 16, placebo paired t ≈ 9, floor clears, leak and positive control pass).
 - **No edge:** three random-walk universes → **DID NOT PASS** (t ≈ −0.8 to −1.0). A tiny edge on 3 symbols → not PASS. Too few trades → CANNOT MEASURE.
 - **Costs:** +0.10% lowers every net by exactly 0.001.
 - **Determinism.**
@@ -89,7 +89,7 @@ Cycle 2 result: no regressions and no blocking defect. All 11 gates were pinned,
 - **The limit:** `controls.maxWholeRuleFalsePass` is capped at R313's 0.05. A rule may be stricter, never looser.
 - **Registered rules need `window.lastBar`,** so a read never depends on when the bars were fetched.
 - **Per-seed record:** the calibration's per-seed verdicts and placebo t's are in the sealed file.
-- **Thresholds:** R313's control thresholds are named constants (leak t < 2, positive control t ≥ 3), and both are pinned.
+- **Thresholds:** R313's control thresholds are named constants (leak t < 2, positive control t ≥ 3), used through `leakPasses` / `positivePasses`. Cycle 3 pinned them at t = 2.5.
 - **Progress:** the CLI prints progress to stderr. A real-size run (24 symbols × 27 years, 60 seeds × 500 draws) takes about 2.5 minutes.
 - **New cases:**
   - incomplete calibration;
@@ -108,6 +108,31 @@ Cycle 2 result: no regressions and no blocking defect. All 11 gates were pinned,
   - The fixture rule's `floorSeeds` went from 10 to 20, and two expectations follow it (floor seeds 20; "at most 1 pass", i.e. ≤ 5%). Reason: with 10 seeds, one chance pass is 10%, over R313's 5% limit, so the planted edge was correctly HELD; R313 itself registers 60 seeds. The no-edge, drift-kept and HELD cases are unchanged in what they demand.
   - Every fixture window now carries `lastBar`, because registered rules must (above).
   - No case was removed (62 → 72).
+
+## Changes after checker cycle 3
+
+Cycle 3 result: no regressions, no case removed, and the 10 → 20 floor-seed change was judged fair. Its main finding:
+
+- **D1 (medium) — R313's calibration has a structural ceiling.**
+  - Every pass needs "mean above the leave-one-out floor's p95". With a nearest-rank p95, at most N − ceil(0.95 (N − 1)) of N seeds can meet that: 1 of 20, 2 of 40, **3 of 60, which is exactly 5%**.
+  - So at 20, 40 or 60 seeds the "≤ 5%" calibration **can never hold a read**. **R313's registered design (60 seeds) has the same property.** It cannot be changed here without a registry amendment.
+  - The runner now **reports** it: `calibration.ceiling` gives the maximum possible passes, the rate, and whether the calibration can hold at this seed count.
+  - The selftest no longer asserts the tautology "at most 1 of 20". Instead it asserts things that can fail:
+    - every per-seed PASS clears the t gate and its **own** placebo t, on both the planted edge and the drift-kept universe;
+    - a 21-seed run (ceiling 2 of 21, 9.5%) is **HELD** at the default 5% when the bar is −100;
+    - the ceiling's known answers.
+  - R313's drift-**free** arm is now reported too. As in R313, it decides nothing.
+  - **For the operator:** if the calibration is meant to be able to hold a read, the registry must say so: for example, choose a seed count where the ceiling exceeds 5% (21, 41, 61), or set a stricter limit.
+- **D2 — `rsi-dip` untested.** `rsi-dip` signals now have known-answer cases (RSI below, close < SMA, the trend filter, close > SMA exit).
+- **D3 — unpinned paths.** New cases cover: the time cap honouring the window; the thresholds at 2.5; the positive control being winners only; the data-set sha recomputed; `canon` and undefined keys; open above high, close below low, a price of 0; and the rule bounds (`floorSeeds` 4, `lastBar` before `to` or 9999-12-31, `roundTrip` 0.05, `minMonths` 2).
+- **D4 — data gaps.** The largest calendar gap per symbol is reported in the sealed file and refused above `window.maxGapDays` (default 14).
+- **D5 — `lastBar` too loose.** `window.lastBar` is limited to 10 days after `window.to`.
+
+Test edits, with reasons:
+
+- **The planted-edge calibration case:** "≤ 1 pass of 20" was replaced by the per-seed gate check plus the ceiling report. Reason: the old assertion could not fail (D1). Mutant Z04, which forces the calibration's placebo and floor-t gates to pass, is now caught.
+
+No case was removed (72 → 86).
 
 ## Missing from this clean copy (not reconstructed)
 

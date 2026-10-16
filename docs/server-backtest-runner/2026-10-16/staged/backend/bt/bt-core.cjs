@@ -129,7 +129,7 @@ const isWeekend = (d) => { const g = new Date(String(d).slice(0, 10) + "T12:00:0
  * date,open,high,low,close[,volume]) -> { bars: [{ t, o, h, l, c, v }], sha, file, weekendDropped }; THROWS on anything it cannot trust:
  * absent, unparseable, a price not finite and > 0, high < low, dates not strictly increasing (a duplicate included), a malformed date.
  */
-function loadBars(dir, sym, { lastBar = null, coverTo = null } = {}) {
+function loadBars(dir, sym, { lastBar = null, coverTo = null, maxGapDays = null } = {}) {
   if (!/^[A-Z0-9.\-]{1,12}$/.test(sym)) throw new Error(`bad symbol ${JSON.stringify(sym)}`);
   const fj = path.join(dir, sym + ".json"), fc = path.join(dir, sym + ".csv"), file = fs.existsSync(fj) ? fj : fs.existsSync(fc) ? fc : null;
   if (!file) throw new Error(`${sym}: no bar file (${sym}.json or ${sym}.csv) in ${dir}`);
@@ -158,13 +158,21 @@ function loadBars(dir, sym, { lastBar = null, coverTo = null } = {}) {
   if (bars.length < 2) throw new Error(`${sym}: fewer than 2 bars`);
   // coverage: the file must reach the window's end (within 7 days); a symbol whose data stop early is refused, never silently thinner
   if (coverTo) { const end = Date.parse(coverTo + "T00:00:00Z"), last = Date.parse(bars[bars.length - 1].t + "T00:00:00Z"); if (last < end - 7 * 86400000) throw new Error(`${sym}: its bars end ${bars[bars.length - 1].t}, before the window's end ${coverTo} (coverage)`); }
-  return { bars, sha: sha256(buf), file: path.basename(file), weekendDropped, afterLastDropped };
+  // the largest calendar gap between consecutive bars (reported; refused above maxGapDays): a hole of months would book a whole move as one trade
+  let maxGap = 0, gapAt = null; for (let i = 1; i < bars.length; i++) { const g = (Date.parse(bars[i].t + "T00:00:00Z") - Date.parse(bars[i - 1].t + "T00:00:00Z")) / 86400000; if (g > maxGap) { maxGap = g; gapAt = bars[i - 1].t; } }
+  if (maxGapDays != null && maxGap > maxGapDays) throw new Error(`${sym}: a gap of ${maxGap} calendar days after ${gapAt} (more than ${maxGapDays}: missing data)`);
+  return { bars, sha: sha256(buf), file: path.basename(file), weekendDropped, afterLastDropped, maxGapDays: maxGap, maxGapAfter: gapAt };
 }
 
 // ── NEW: the rule's signals ──────────────────────────────────────────────────────────────────────────────────────────────
 const FAMILIES = ["ibs-dip", "rsi-dip"];
 /** R313's control thresholds (registry: leak test t_NW < 2, positive control t_NW >= 3) */
 const LEAK_T_MAX = 2, POSITIVE_T_MIN = 3;
+const leakPasses = (t) => t != null && fin(t) && t < LEAK_T_MAX, positivePasses = (t) => t != null && fin(t) && t >= POSITIVE_T_MIN;
+/** the most drift-kept seeds that CAN pass the whole rule (checker cycle 3): every pass needs "mean above the leave-one-out floor's p95",
+ *  which by construction (nearest rank) at most N - ceil(0.95 (N - 1)) of N seeds can satisfy; at N = 20 / 40 / 60 that is exactly 5%,
+ *  so R313's "<= 5%" calibration can never hold a read there — a property of the registered design, reported, never changed here */
+const calibrationCeiling = (N) => (N >= 2 ? N - Math.ceil(0.95 * (N - 1)) : N);
 /** validate a bt-rule-v1 (throws with every problem it finds) */
 function checkRule(R) {
   const bad = [], e = (s) => bad.push(s), P = (R && R.params) || {}, en = P.entry || {}, ex = P.exit || {};
@@ -183,7 +191,8 @@ function checkRule(R) {
   if (P.maxHoldDays != null && !(Number.isInteger(P.maxHoldDays) && P.maxHoldDays >= 1)) e("params.maxHoldDays: an integer >= 1");
   const W = (R && R.window) || {};
   if (!/^\d{4}-\d{2}-\d{2}$/.test(W.from || "") || !/^\d{4}-\d{2}-\d{2}$/.test(W.to || "") || !(W.from < W.to)) e("window: from < to, both YYYY-MM-DD");
-  if (W.lastBar != null && !(/^\d{4}-\d{2}-\d{2}$/.test(W.lastBar) && W.lastBar >= W.to)) e("window.lastBar: YYYY-MM-DD, on or after window.to (bars after it are dropped: the forming-bar guard)");
+  if (W.lastBar != null && !(/^\d{4}-\d{2}-\d{2}$/.test(W.lastBar) && W.lastBar >= W.to && Date.parse(W.lastBar + "T00:00:00Z") - Date.parse(W.to + "T00:00:00Z") <= 10 * 86400000)) e("window.lastBar: YYYY-MM-DD, on or after window.to and at most 10 days after it (bars after it are dropped: the forming-bar guard; frozen at registration)");
+  if (W.maxGapDays != null && !(Number.isInteger(W.maxGapDays) && W.maxGapDays >= 4)) e("window.maxGapDays: an integer >= 4 (calendar days)");
   const C = (R && R.costs) || {};
   if (!(fin(C.roundTrip) && C.roundTrip >= 0 && C.roundTrip < 0.05)) e("costs.roundTrip: a fraction in [0, 0.05) (0.0006 = 0.06%)");
   if (!(fin(C.stress) && C.stress >= C.roundTrip)) e("costs.stress: a fraction >= costs.roundTrip (the 2x-cost gate)");
@@ -276,5 +285,5 @@ function barFor(n, { variants = 1, seed = 313, trialsNw = 50000, trialsIid = 200
   return { n, variants, seed, trialsNw, trialsIid, nwSim: r3(nw), iid: r3(iid), bar: r3(Math.max(nw, iid)), nullBarFile: nb.path || null, nullBarSha: nb.sha || null };
 }
 
-module.exports = { LEAK_T_MAX, POSITIVE_T_MIN, fin, r4, r3, r1, sha256, ibsOf, mkTrade, simulate, sma, rmaSeeded, rsiWilder, mean, nwT, monthlySeries, summarise, strip, nearestRank, mulberry, hash, scramble,
+module.exports = { LEAK_T_MAX, POSITIVE_T_MIN, leakPasses, positivePasses, calibrationCeiling, fin, r4, r3, r1, sha256, ibsOf, mkTrade, simulate, sma, rmaSeeded, rsiWilder, mean, nwT, monthlySeries, summarise, strip, nearestRank, mulberry, hash, scramble,
   shiftMonth, placeboPrepC, placeboRunC, pairedDiffs, floorGate, isWeekend, loadBars, FAMILIES, checkRule, entryFromOf, prepRule, simulateCapped, simulateRule, decideRule, loadNullBar, barFor };
