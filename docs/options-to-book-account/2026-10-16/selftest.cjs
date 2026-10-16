@@ -134,7 +134,7 @@ const mleg = (o = {}) => ({ order_class: "mleg", qty: "1", type: "limit", limit_
     for (const bad of ["/v2/orders/opt-1\\%2E%2E", "/v2/orders/opt-1%2F..", "/v2/orders/%2E", "/v2/orders/opt-1;x", "/v2/orders/opt-1/../../orders", "/v2/orders/..", "/v2/orders/.", "/v2/orders/%E0"]) {
       ok(`a non-canonical write path is a refusal: ${bad}`, (await refusedWith(() => g.request("DELETE", bad), "PATH")) === true && b.writes().length === nw);
     }
-    ok("GET on a non-canonical path is refused too", (await refusedWith(() => g.request("GET", "/v2/%2E%2E/v1/orders"), "PATH")) === true && (await refusedWith(() => g.request("GET", "/v2/orders?x=%2F"), "PATH")) === true);
+    ok("GET on a non-canonical path is refused too", (await refusedWith(() => g.request("GET", "/v2/%2E%2E/v1/orders"), "PATH")) === true && (await refusedWith(() => g.request("GET", "/v2/orders?x=a\\b"), "PATH")) === true && (await refusedWith(() => g.request("GET", '/v2/orders?x="y"'), "PATH")) === true);
     ok("a stock symbol percent-encoded in a position close: refused", (await refusedWith(() => g.request("DELETE", "/v2/positions/%53%50%59"), "PATH")) === true && b.writes().length === nw);
     const c0 = b.calls.length; await g.request("DELETE", "/v2/orders/opt-1");
     const sent = b.calls.slice(c0).filter((c) => c.method === "DELETE");
@@ -145,6 +145,16 @@ const mleg = (o = {}) => ({ order_class: "mleg", qty: "1", type: "limit", limit_
     const c1 = b.calls.length; await g.request("DELETE", `/v2/positions/${OCC}?qty=2`);
     ok("an option close by whole qty goes to the rebuilt path with its qty", b.calls.slice(c1).some((c) => c.method === "DELETE" && c.path === `/v2/positions/${OCC}?qty=2`));
     ok("a close by fractional qty: refused", (await refusedWith(() => g.request("DELETE", `/v2/positions/${OCC}?qty=1.5`), "PATH")) === true);
+    { const c3 = b.calls.length; await g.request("GET", "/v2/orders:by_client_order_id?client_order_id=mirror-1");
+      ok("reads may use orders:by_client_order_id", b.calls.length === c3 + 1 && b.calls[c3].method === "GET" && b.calls[c3].path === "/v2/orders:by_client_order_id?client_order_id=mirror-1"); }
+    ok("…but a write may not use a ':' route", (await refusedWith(() => g.request("DELETE", "/v2/orders:by_client_order_id"), "PATH")) === true);
+    { const c4 = b.calls.length; await g.request("GET", "/v2/orders?after=2026-10-16T09:30:00%2B00:00&status=all");
+      ok("a GET query with %2B passes unchanged", b.calls.length === c4 + 1 && b.calls[c4].path === "/v2/orders?after=2026-10-16T09:30:00%2B00:00&status=all"); }
+    ok("a replace with an unknown or __proto__ key: refused", (await refusedWith(() => g.request("PATCH", "/v2/orders/opt-1", JSON.parse('{"__proto__":{"symbol":"SPY"},"limit_price":"1.0"}')), "NOT_OPTION")) === true && (await refusedWith(() => g.request("PATCH", "/v2/orders/opt-1", { limit_price: "1.0", extended_hours: true }), "NOT_OPTION")) === true);
+    { let k = 0; const pg = {}; Object.defineProperty(pg, "limit_price", { enumerable: true, get: () => (k++ === 0 ? "1.05" : "9.99") });
+      const c2 = b.calls.length; await g.request("PATCH", "/v2/orders/opt-1", pg); const sentP = b.calls.slice(c2).find((c) => c.method === "PATCH");
+      ok("a PATCH getter is read once: the text sent is the text checked", !!sentP && sentP.body.limit_price === "1.05" && Object.keys(sentP.body).join() === "limit_price"); }
+    ok("a close or exercise with a body: refused", (await refusedWith(() => g.request("DELETE", `/v2/positions/${OCC}`, {}), "PATH")) === true && (await refusedWith(() => g.request("POST", `/v2/positions/${OCC}/exercise`, {}), "PATH")) === true);
     ok("a body that does not serialize: refused as a guard refusal", (await refusedWith(() => { const c = {}; c.c = c; return g.request("POST", "/v2/orders", c); }, "BODY")) === true);
   }
 

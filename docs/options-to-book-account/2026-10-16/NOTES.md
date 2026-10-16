@@ -19,7 +19,7 @@ Nothing else moves in this task.
 | `base/backend/lib/book-options-guard.js.absent` | marker: the file does not exist live, so rollback removes it |
 | `deploy.cjs --plan / --apply`, `rollback.cjs --plan / --rollback` | refuse when a live file matches neither base nor staged (drift), and refuse on trading weekdays 05:30–16:00 MT |
 | `record.cjs --dry` / `--restarted YYYY-MM-DD --apply` | one change-registry row, `breaksComparability: true`, dated to the first session the mirror runs on BOOK. Refuses 13:50–15:50 MT on trading days. |
-| `selftest.cjs` | 85 checks on a fake broker. Ends `SELFTEST PASSED (85 checks)`. |
+| `selftest.cjs` | 91 checks on a fake broker. Ends `SELFTEST PASSED (91 checks)`. |
 
 ### Environment variable NAMES (the values are set at home only)
 
@@ -36,10 +36,10 @@ Nothing else moves in this task.
 | paths | Canonical only: `/v2/` followed by plain segments of letters, digits, `.`, `_` or `-`. No `%`, no backslash, no `.` or `..` segment, and a query only on GETs and on position closes (`qty=<whole>`). Every write is sent to a path **rebuilt** from the validated id or OCC symbol, never to the caller's string. |
 | bodies | serialized **once**. The checked text is the text sent, so a `toJSON` method, a getter or an inherited field cannot change what goes out. |
 | `POST /v2/orders` | Allowed: a single-leg OCC option symbol, or `order_class:"mleg"` whose every leg (1–4) is an OCC symbol; whole contracts. Refused: notional orders, bracket/oco/oto orders, and any stock or ETF symbol. |
-| `DELETE` / `PATCH /v2/orders/{id}` | Only after `GET /v2/orders/{id}` shows an option order. The BOOK account also holds Plan E's ETF orders, and the mirror can never cancel or replace them. A PATCH may not change symbol, side, legs, notional or class. |
+| `DELETE` / `PATCH /v2/orders/{id}` | Only after `GET /v2/orders/{id}` shows an option order. The BOOK account also holds Plan E's ETF orders, and the mirror can never cancel or replace them. A PATCH may carry only `qty`, `limit_price`, `stop_price`, `trail`, `time_in_force` and `client_order_id`. |
 | `DELETE /v2/positions/{OCC}`, `POST /v2/positions/{OCC}/exercise` and `/do-not-exercise` | option symbols only; no `percentage` close |
 | everything else that writes | refused, including cancel-all (`DELETE /v2/orders`) and close-all (`DELETE /v2/positions`) |
-| `GET /v2/...` | passes. Reads change nothing. |
+| `GET /v2/...` | passes. Reads change nothing. Reads may also use Alpaca's `:` routes (`orders:by_client_order_id`) and `%`/`+` in the query. Writes may not. |
 
 Errors name env variables, never key values. The account number appears only as its last four characters.
 
@@ -92,7 +92,18 @@ Until that edit is made, deploying this package installs a module that **nothing
 
 The root `package.json` is `"type": "module"` and this copy has no `backend/package.json`, so the scripts load backend files through `loadcjs.cjs`. `npm ci` cannot run here because there is no lockfile. No npm dependency is needed.
 
+## Wiring check at home: the mirror's own GETs
+
+Grep the mirror for every broker path and query it uses: `grep -n "/v2/" backend/alpaca-options-mirror.js`. Every read must fit the read pattern: path segments of letters, digits and `. _ : -`; query characters `A-Z a-z 0-9 _ . , : = & % + -`. Anything else is refused, which stops the run with a `GuardRefusal`. That is safe, but it stops the mirror, so check before the first live run.
+
+## Test edits (AGENTS.md: every test edit, with its reason)
+
+- "drift refuses rollback" became "drift refuses apply and rollback". The checker showed that apply on drift was not tested. The check was strengthened, not weakened.
+- "the live repo has no guard file yet" became "the live guard file is base or applied, never drifted". The old check would fail after a correct `--apply` at home. The new one still fails on drift.
+- "GET on a non-canonical path is refused too": its query case `?x=%2F` became `?x=a\b` and `?x="y"`. Reads now allow `%` in the query (E1: encoded timestamps), so `%2F` is allowed by design. Reads change nothing. The non-canonical path case (`/v2/%2E%2E/v1/orders`) is unchanged and still refused.
+- "fractional / zero / missing qty is refused" gained a numeric `0.5` case, which was a surviving mutant.
+
 ## Checks run here
 
-- `node docs/options-to-book-account/2026-10-16/selftest.cjs` → `SELFTEST PASSED (85 checks)`
+- `node docs/options-to-book-account/2026-10-16/selftest.cjs` → `SELFTEST PASSED (91 checks)`
 - `node --check` on every script; `deploy.cjs --plan` reads `base` (new file)

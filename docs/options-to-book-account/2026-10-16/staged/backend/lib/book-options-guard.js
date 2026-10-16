@@ -110,17 +110,19 @@ function makeBookOptionsGuard({ env = process.env, fetchImpl = globalThis.fetch,
 
   /**
    * request(method, path, body) — the mirror's single door to the broker. The path must be canonical (/v2/ then plain segments of
-   * letters, digits, '.', '_' or '-'; no '%', '\\', '.' or '..' segment). Every write is sent to a path REBUILT from the validated
+   * letters, digits, '.', '_' or '-' (reads also ':'); no '%', '\\', '.' or '..' segment). Every write is sent to a path REBUILT from the validated
    * parts, never to the caller's string, and its body is serialized once: the checked text is the sent text.
    */
   async function request(method, p, body) {
     const M = String(method || "").toUpperCase();
     if (typeof p !== "string") refuse("PATH", "the path is not a string");
     const qi = p.indexOf("?"), pathPart = qi < 0 ? p : p.slice(0, qi), query = qi < 0 ? "" : p.slice(qi + 1);
-    if (!/^\/v2(\/[A-Za-z0-9._-]+)+$/.test(pathPart)) refuse("PATH", `path ${JSON.stringify(pathPart)} is not a canonical /v2/ path`);
+    const isGet = M === "GET";
+    // reads may use Alpaca's ':' routes (orders:by_client_order_id) and encoded query values; writes may not
+    if (!(isGet ? /^\/v2(\/[A-Za-z0-9._:-]+)+$/ : /^\/v2(\/[A-Za-z0-9._-]+)+$/).test(pathPart)) refuse("PATH", `path ${JSON.stringify(pathPart)} is not a canonical /v2/ path`);
     const s = pathPart.split("/").filter(Boolean);
     if (s.some((x) => x === "." || x === "..")) refuse("PATH", "a '.' or '..' segment is not allowed");
-    if (query && !/^[A-Za-z0-9_.,:=&-]*$/.test(query)) refuse("PATH", "the query holds characters that are not allowed");
+    if (query && !(isGet ? /^[A-Za-z0-9_.,:=&%+-]*$/ : /^[A-Za-z0-9_.,:=&-]*$/).test(query)) refuse("PATH", "the query holds characters that are not allowed");
     let wire, snap;
     if (body !== undefined) {
       try { wire = JSON.stringify(body); snap = wire === undefined ? undefined : JSON.parse(wire); } catch (e) { refuse("BODY", `the body does not serialize (${String(e.message).slice(0, 60)})`); }
@@ -138,6 +140,8 @@ function makeBookOptionsGuard({ env = process.env, fetchImpl = globalThis.fetch,
       if (M === "PATCH") {
         if (!isPlainObject(snap)) refuse("PATH", "a replace needs a body");
         const bad = ["symbol", "side", "legs", "notional", "order_class"].filter((k) => k in snap); if (bad.length) refuse("NOT_OPTION", `a replace may not change ${bad.join(", ")}`);
+        const PATCH_KEYS = ["qty", "limit_price", "stop_price", "trail", "time_in_force", "client_order_id"];
+        const unknown = Object.keys(snap).filter((k) => !PATCH_KEYS.includes(k)); if (unknown.length) refuse("NOT_OPTION", `a replace may carry only ${PATCH_KEYS.join(", ")} (not ${unknown.join(", ")})`);
         if (snap.qty !== undefined && !isWholeQty(snap.qty)) refuse("NOT_OPTION", "a replace qty must be whole contracts");
       }
       await optionOrderById(id);
