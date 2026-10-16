@@ -150,8 +150,11 @@ Exit 0 computed (and written) · 1 a series could not be read, or the write fail
 ```
 
 One key per date. A run **replaces that day's key and keeps every other date byte for byte**; running the same day
-twice writes the same document. A status file that does not parse is **never replaced**: the run refuses (exit 1) and
-says so, because an unreadable file may be holding readings nobody has copied yet.
+twice re-reads it and writes the same reading, with only its three timestamps moved (`updatedAt`, that day's
+`computedAt`, and the `computed …` line inside `summary`) — the selftest proves the byte-for-byte form of this with a
+frozen clock, which is the only sense in which it is byte-for-byte. A status file that does not parse is **never
+replaced**: the run refuses (exit 1) and says so, because an unreadable file may be holding readings nobody has copied
+yet.
 
 ---
 
@@ -256,7 +259,11 @@ the fixtures, never to a rule**:
 Cycle 2 (the builder's re-run of both checks after those fixes) found no survivor: **ALL 36 MUTANTS KILLED**,
 **ALL 467 CHECKS PASSED**.
 
-**Cycle 3 — the independent checker's run — did not report.** A separate read-only checker was started (every check
+**Cycle 3 — the independent checker's run — reported AFTER the handover, with VERDICT: FAIL. Its findings are
+recorded below under CHECKER REPORT and NONE of them has been fixed**, because the session was told to hand over and
+not to start another cycle. Read that section before applying anything.
+
+A separate read-only checker was started (every check
 command, the rules re-read against the cited lines of `docs/ai-bubble-2026-10/`, the hard rules of `AGENTS.md`, its own
 fresh mutations and its own crafted stores), but the session was handed over before its report arrived, so **nothing
 in this package has been confirmed by anyone but its builder**. See **HANDOVER** below.
@@ -399,3 +406,99 @@ cycles, and the independent checker's run was cut off before it reported. Branch
 - `deploy.cjs` reads the process list with `powershell.exe Get-CimInstance` on win32 and `ps -eo pid=,command=`
   elsewhere. It was exercised on Linux here; at home (Windows) the powershell path has **not** been run, so the first
   `deploy.cjs --plan` at home should be read for a "process list cannot be read" refusal before `--apply` is tried.
+
+---
+
+## CHECKER REPORT (cycle 3) — received after the handover, NOTHING FIXED
+
+An independent read-only checker ran after this session was told to hand over. **VERDICT: FAIL.** It changed nothing
+in the repository (it worked in its own temp directory) and **none of its findings has been acted on** — no fix cycle
+was started, by instruction. This section is its report, condensed; the numbering is its own.
+
+It confirmed, independently: every check command passes with the verdict lines listed above; the `deploy.cjs` sha256
+pins match `staged/`; the selftest and the mutation check write nothing inside the repository; every hard rule of
+`AGENTS.md` is clear (no orders, no network or broker call anywhere in the package, no secrets, no personal details,
+JSON only through `writeJsonAtomic`, nothing requiring `automation/close-chain.cjs`, no Node-24-only API); and both
+rules match the lines they cite, inequality by inequality — the band's first reading and both its 0.98/1.02 levels,
+the 10-month mean including its own current month-end, which comparisons are strict, the last session never being a
+month-end, and the dividend-adjusted close as the input. It re-derived eight of the known-answer numbers above by hand
+and found each one right, including that `b1-equal`'s `0.98 × 9950 = 9751` really is exact in floating point.
+
+It also found that this file, in the commit handed to it, still claimed its own run had found no survivor. That
+sentence was false and has been corrected (above).
+
+### What is actually wrong
+
+**1. (Real defect, not fixed.) B2's `armed` is decided on 4-decimal-ROUNDED numbers, so it disagrees with the rule it
+cites.** `staged/backend/ai-bubble-ladder.js:258-261` rounds both `value` and `threshold` with `r4` and then compares
+them, while `bust/triggers.js:50`, the live `backend/book-etf-rebalancer.js:64` and the selftest's own reference
+implementation all compare raw values. On a store whose last month-end is `100.00002` against a mean of `100.000002`,
+the source rule reads IN and this monitor prints **ARMED** — a false arm on the slow rung, and it is internally
+inconsistent there too (`tenMonthTrend` reads IN while `rung.armed` is true, so `armedSince` names the start of a run
+of *not-armed* readings). Values near a 10-month mean at that distance are a live possibility on the VWEHX/VFITX ratio.
+**The fix is one line** — compare the raw numbers and keep `r4` for presentation only:
+`out.armed = s.values[last] <= mean;` — **plus a fixture whose last month-end sits a hair above its mean**, asserted
+against `refTenMonth`. No mutant in `mutants.cjs` covers this; the checker's mutation that restored the source rule
+*survived* all 467 checks, which is how it was found.
+
+**2. The provisional arming decision has no test at all.** `armedIfMonthEndedToday`
+(`staged/backend/ai-bubble-ladder.js:272`) appears nowhere in `selftest.cjs`. Flipping its `<=` to `<` survives, and
+`b1-cross`'s B2-SPY sits exactly on equality, so the mutant silently inverts a printed line in a shipped fixture.
+Three checks close it: the latest close above X*, below X*, and exactly on X* (which must read "would ARM", since
+`now.js:15`'s IN test is strict).
+
+**3. B2's distance percentages are effectively unchecked.** The only assertion is `=== 0` in `b2-equal`, which is
+invariant both to dropping the `× 100` and to using the wrong denominator; both mutations survive. B1's equivalent is
+properly checked. Assert `b2-no-cross`'s `+0.762066%` and `b2-cross`'s provisional `−14.122137%` as literals.
+
+**4. Five correct guards ship unproven** (each mutation survived; the checker verified by hand that the real code is
+right, so these are selftest holes, not defects): only `ENOENT` counting as "no status file" (`monitor.js:64` — the
+guard this file's promise about uncopied readings rests on), the `doc.spec` check and `updatedAt` in `mergeStatus`,
+the zero-denominator guard in `ratioSeries`, and the empty-series `armed: null` path.
+
+**5. `--out` and `--data` swallow a following flag.** `monitor.js:54-55`: `--out --write` yields a read-only run with
+`out` set to a file literally named `--write`; `--out --json` loses `--json`. `--as-of` is protected only incidentally,
+by its date regex. Reject any value matching `/^--/` in all three branches.
+
+**6. `--as-of` accepts impossible dates.** `monitor.js:53` checks shape only, so `--as-of 2026-13-01` is accepted and,
+being lexically above every stored date, applies **no cut at all** — the opposite of what was asked — and is stored as
+the status's `cut`. `2026-00-15` reads as of 2025-12-31. Validate that the date round-trips.
+
+**7. One negative adjusted close arms B2-CREDIT.** `ai-bubble-ladder.js:179` rejects a zero denominator but not a
+negative one, so a single corrupt VFITX bar prints `B2-CREDIT ARMED … -1.2300 vs 10-mo mean 0.9840 (-225.00%)` and
+exits 0. This is what `flip-levels.cjs` would do, so it is not a rule divergence — but reject `q <= 0` (and the
+numerator) and name the dropped session.
+
+**8. A dropped denominator silently moves the credit rung's month-end.** With VFITX unusable on 2026-09-30, B2-CREDIT's
+"last completed month-end" becomes 2026-09-29, judged against a different window, with nothing said beyond the printed
+date. Count and print the dropped dates, as `behind` does for lagging series.
+
+**9. Month-end misalignment between the two B2 rungs is not reported.** `behind` compares last *sessions*, so with a
+long hole in one series B2-QQQ can read a 2025 month-end while B2-SPY reads 2026-09-30 on the same status, and nothing
+fires. The promise above that "one rung never speaks for a later day than another" holds for sessions, not month-ends.
+
+**10. `behind`'s wording is backwards when one series runs AHEAD.** `ai-bubble-ladder.js:297`: with QQQ running 16
+months past the rest, the summary names the four *other* symbols as laggards and never prints the one fact that
+matters. Name the series that runs past the status date instead.
+
+**11. Disclosure gap, not a defect.** On a month-end day the live `book-etf-rebalancer.js:64` keys by `YYYY-MM` and so
+uses *that day's* bar as the current month-end, while this monitor (faithfully following `bust/triggers.js:41`) reads
+the month before. On the one day a month the operator would most want to compare them, they read different month-ends.
+This file cites that line as "the same rule, in the same words"; it should say so.
+
+Also noted, lower value: `--out` is not absolutised in one path, and there is no fixture crossing a
+December-to-January month boundary.
+
+### What this does to the order of work
+
+**Finding 1 comes first and must be fixed before this package is applied** — it is a wrong answer on a shipped rung,
+and fixing it is one line plus one fixture. Findings 2, 3 and 4 are selftest holes of the kind the loop exists to
+close, and should be closed in the same cycle, since each one is a check that would have caught something. Findings 5
+to 10 are robustness and wording; 11 is a line of prose. **None of them is a reason to change a rule**, and the
+checker says so explicitly: a mutation the selftest does not catch is a hole in the selftest.
+
+The *Left to do* list above stands, with these inserted ahead of it: fix Finding 1 and add its fixture; close the
+holes behind Findings 2-4; re-run both checks (the count must only grow, and `mutants.cjs` should gain the checker's
+surviving mutations — at least the restored-source-rule one from Finding 1 and the provisional `<=` from Finding 2);
+then have the checker look again. Only then items 3 and 4 of *Left to do* (the B1/B2 label confirmation, and the apply
+at home).
