@@ -36,8 +36,8 @@ function synth(seed, n, edge = 0, from = "2010-01-04", drift = 0) {
 const writeBars = (dir, sym, bars) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, sym + ".json"), JSON.stringify(bars)); };
 const SYMS = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH", "III", "JJJ"];
 const baseRule = (o = {}) => ({ schema: "bt-rule-v1", id: "FIXTURE-IBS", family: "ibs-dip", universe: SYMS, params: { entry: { ibsBelow: 0.1 }, exit: { ibsAbove: 0.9 }, maxHoldDays: null },
-  window: { from: "2010-01-01", to: "2017-12-31" }, costs: { roundTrip: 0.0006, stress: 0.0012 }, unit: "month", bar: { tRequired: 1.66, source: "fixture" },
-  gates: { minTrades: 100, minMonths: 36 }, controls: { placeboDraws: 100, placeboSeed: 313, floorSeeds: 10, leakSeeds: [1, 2] }, registration: { id: "RFIX", registeredOn: "2026-10-16" }, ...o });
+  window: { from: "2010-01-01", to: "2017-12-31", lastBar: "2017-12-31" }, costs: { roundTrip: 0.0006, stress: 0.0012 }, unit: "month", bar: { tRequired: 1.66, source: "fixture" },
+  gates: { minTrades: 100, minMonths: 36 }, controls: { placeboDraws: 100, placeboSeed: 313, floorSeeds: 20, leakSeeds: [1, 2] }, registration: { id: "RFIX", registeredOn: "2026-10-16" }, ...o });
 
 section("reuse: the R313 functions are r313-ibs-etfs.js's text, verbatim", () => {
   const src313 = fs.readFileSync(path.join(REPO, "backend", "r313-ibs-etfs.js"), "utf8"), mine = fs.readFileSync(path.join(BT, "bt-core.cjs"), "utf8");
@@ -62,7 +62,7 @@ section("known answer — hand-computed", () => {
   const days = sessions("2020-01-02", 12), mk = (c, ibs) => ({ o: c, h: c + 1, l: c - 1, c: c - 1 + 2 * ibs });
   const spec = [[90, 0.5], [95, 0.5], [100.9, 0.05], [101, 0.5], [102.1, 0.95], [102, 0.5], [51, 0.0], [50, 0.5], [48, 1.0], [48, 0.5], [47.5, 0.02], [47, 0.5]];
   const bars = spec.map(([c, i], k) => ({ t: days[k], ...mk(c, i), v: 10 }));
-  const R = baseRule({ universe: ["ONE"], window: { from: "2020-01-01", to: "2020-12-31" } });
+  const R = baseRule({ universe: ["ONE"], window: { from: "2020-01-01", to: "2020-12-31", lastBar: "2020-12-31" } });
   const P = B.prepRule(bars, R), r = B.simulateRule(P, "ONE", R);
   const tr = r.closed.map((x) => ({ ...x, net: x.gross - 0.0006 }));
   const want = [{ e: days[2], x: days[4], g: 103 / 100 - 1 }, { e: days[6], x: days[8], g: 49 / 50 - 1 }];
@@ -70,7 +70,7 @@ section("known answer — hand-computed", () => {
   ok("the trade entered on bar 10 never exits: listed OPEN, not counted", r.open.length === 1 && r.open[0].entryDate === days[10]);
   ok("net = gross - 0.06% exactly; both in January 2020: the month's mean is their mean", Math.abs(tr[0].net - 0.0294) < 1e-12 && Math.abs(tr[1].net - (-0.0206)) < 1e-12 && Math.abs(B.summarise(tr).meanNet - 0.0044) < 1e-12 && B.summarise(tr).months === 1);
   ok("Newey-West t, lag 1, on [1%, 2%, -0.5%, 1.5%] = 3.5777 (worked by hand: v = 8.75e-5 - 5.625e-5)", Math.abs(B.nwT([0.01, 0.02, -0.005, 0.015]) - 0.01 / Math.sqrt(3.125e-5 / 4)) < 1e-9 && Math.abs(B.nwT([0.01, 0.02, -0.005, 0.015]) - 3.5777) < 1e-4);
-  const Rc = baseRule({ universe: ["ONE"], window: { from: "2020-01-01", to: "2020-12-31" }, params: { entry: { ibsBelow: 0.1 }, exit: { ibsAbove: 0.99 }, maxHoldDays: 2 } });
+  const Rc = baseRule({ universe: ["ONE"], window: { from: "2020-01-01", to: "2020-12-31", lastBar: "2020-12-31" }, params: { entry: { ibsBelow: 0.1 }, exit: { ibsAbove: 0.99 }, maxHoldDays: 2 } });
   const rc = B.simulateRule(B.prepRule(bars, Rc), "ONE", Rc);
   ok("the time cap (maxHoldDays 2, exit IBS > 0.99): the first trade closes at bar 4 by the cap, the second at bar 8 by its exit (IBS 1.0)", rc.closed.length === 2 && rc.closed[0].exitDate === days[4] && rc.closed[0].capped === true && rc.closed[1].exitDate === days[8] && !rc.closed[1].capped, JSON.stringify(rc.closed.map((x) => [x.entryDate, x.exitDate, x.capped])));
   const Rr = baseRule({ family: "rsi-dip", universe: ["ONE"], params: { entry: { rsiBelow: 10, rsiN: 2 }, exit: { closeAboveSma: 5 } } });
@@ -100,12 +100,12 @@ section("PLANTED EDGE — must PASS", () => {
   ok("its controls: leak test t < 2 on both drift-free shuffles; positive control t >= 3; 2x cost still > 0", r.leakTest.every((x) => x.pass) && r.positiveControl.pass && r.stats.stress.meanNet > 0, JSON.stringify([r.leakTest, r.positiveControl]));
   const r2 = RUN.run(baseRule({ costs: { roundTrip: 0.0016, stress: 0.0032 } }), dir, { NB });
   ok("costs: +0.10% round trip lowers every trade's net by exactly 0.001 and the monthly mean by exactly 0.001", r2.trades.length === r.trades.length && r2.trades.every((x, i) => Math.abs((r.trades[i].net - x.net) - 0.001) < 1e-12) && Math.abs((r.stats.meanNet - r2.stats.meanNet) - 0.001) < 1e-12);
-  ok("the calibration (R313): the whole rule on the 10 drift-kept scrambles passes none of them; the floor has all 10 seeds", r.calibration.calibrated === true && r.calibration.passes === 0 && r.calibration.driftKeptSeeds === 10 && r.floor.seeds === 10, JSON.stringify(r.calibration));
+  ok("the calibration (R313): the whole rule on the 20 drift-kept scrambles passes at most 1 (<= 5%); the floor has all 20 seeds", r.calibration.calibrated === true && r.calibration.passes <= 1 && r.calibration.driftKeptSeeds === 20 && r.floor.seeds === 20, JSON.stringify(r.calibration));
   ok("open trades are listed, never counted: stats.trades equals the closed trades, none of which lacks an exit", r.stats.trades === r.trades.length && r.trades.every((x) => x.exitDate) && Array.isArray(r.open));
   ok("the 2x-cost mean is exactly the mean less (stress - roundTrip)", Math.abs(r.stats.stress.meanNet - (r.stats.meanNet - 0.0006)) < 1e-12);
   const rb = RUN.run(baseRule({ bar: { tRequired: 99, source: "fixture" } }), dir, { NB });
   ok("a registered rule's bar is used AS GIVEN (99, never recomputed): the same edge then DID NOT PASS on the t gate (and the timing gates)", rb.bar.tRequired === 99 && rb.bar.computed === false && rb.verdict === "DID NOT PASS" && rb.failed.includes("tAtLeastBar"), JSON.stringify([rb.bar, rb.failed]));
-  const rw2 = RUN.run(baseRule({ window: { from: "2012-01-01", to: "2017-12-31" } }), dir, { NB });
+  const rw2 = RUN.run(baseRule({ window: { from: "2012-01-01", to: "2017-12-31", lastBar: "2017-12-31" } }), dir, { NB });
   ok("window.from moves the first entry (no entry before 2012-01-01; fewer trades than from 2010)", rw2.trades.every((x) => x.entryDate >= "2012-01-01") && rw2.trades.length < r.trades.length && Object.values(rw2.perSymbol).every((p) => p.entryFrom === "2012-01-01"));
   const rc2 = RUN.run(baseRule({ costs: { roundTrip: 0.0016, stress: 0.0032 } }), dir, { NB });
   ok("the placebo trades carry the same cost: +0.10% round trip shifts the placebo's median by exactly 0.10%/month", Math.abs((r.placebo.p50PctPerMonth - rc2.placebo.p50PctPerMonth) - 0.1) < 0.0002, `${r.placebo.p50PctPerMonth} ${rc2.placebo.p50PctPerMonth}`);
@@ -127,22 +127,36 @@ section("NO EDGE — must NOT pass", () => {
   const rd = RUN.run(baseRule(), dk, { NB });
   ok(`a drift-kept no-edge universe (+0.12%/day drift, no bounce): t ${rd.stats.tNet} clears the bar, mean > 0 — yet NOT PASS: the placebo gate and the drift-kept floor fail (${rd.failed.join(", ")})`, rd.stats.tNetRaw >= 1.66 && rd.stats.meanNet > 0 && rd.verdict === "DID NOT PASS" && rd.failed.includes("correctedPlaceboPairedTAtLeastBar") && (rd.failed.includes("floorMeanAboveP95") || rd.failed.includes("floorTVsP50AtLeastBar")), JSON.stringify([rd.verdict, rd.failed, rd.stats.tNet, rd.placebo.pairedT]));
   // the calibration HOLDS a read: with a bar no scramble can miss (-100) and a 0% limit, drift-kept scrambles "pass" -> HELD, not PASS
-  const rh = RUN.run(baseRule({ bar: { tRequired: -100, source: "fixture: a bar nothing misses" }, controls: { placeboDraws: 100, placeboSeed: 313, floorSeeds: 10, leakSeeds: [1, 2], maxWholeRuleFalsePass: 0 } }), dk, { NB });
+  const rh = RUN.run(baseRule({ bar: { tRequired: -100, source: "fixture: a bar nothing misses" }, controls: { placeboDraws: 100, placeboSeed: 313, floorSeeds: 20, leakSeeds: [1, 2], maxWholeRuleFalsePass: 0 } }), dk, { NB });
   ok(`the calibration holds a read: drift-kept scrambles pass a bar of -100 (${rh.calibration.passes} of ${rh.calibration.driftKeptSeeds}, limit 0%) -> HELD, its rule verdict kept beside it`, rh.calibration.calibrated === false && rh.calibration.passes > 0 && /^HELD — /.test(rh.verdict) && typeof rh.ruleVerdict === "string", JSON.stringify([rh.verdict, rh.calibration]));
   // the leak test on a scramble whose t cannot be measured (fewer than 3 months): it FAILS -> CANNOT MEASURE
-  const rn = RUN.run(baseRule({ universe: ["AAA", "BBB"], window: { from: "2010-01-01", to: "2010-02-26" }, gates: { minTrades: 1, minMonths: 3 } }), path.join(TMP, "edge"), { NB });
+  const rn = RUN.run(baseRule({ universe: ["AAA", "BBB"], window: { from: "2010-01-01", to: "2010-02-26", lastBar: "2010-02-26" }, gates: { minTrades: 1, minMonths: 3 } }), path.join(TMP, "edge"), { NB });
   ok("a leak scramble with no measurable t (2 months): the leak test FAILS and the verdict is CANNOT MEASURE", rn.leakTest.some((l) => l.tNW == null) && rn.leakTest.filter((l) => l.tNW == null).every((l) => l.pass === false) && /^CANNOT MEASURE/.test(rn.verdict) && rn.failed.includes("leakTestPassed"), JSON.stringify([rn.leakTest, rn.verdict]));
+  // checker cycle 2: the calibration needs EVERY scramble judged — one symbol has no placebo (no other symbol's holds), so it CANNOT be measured
+  const r1s = RUN.run(baseRule({ universe: ["AAA"], gates: { minTrades: 1, minMonths: 3 } }), path.join(TMP, "edge"), { NB });
+  ok("a universe whose scrambles give no measurable placebo t (one symbol): CANNOT MEASURE (the calibration is incomplete), never 'calibrated with 0 passes'", /^CANNOT MEASURE — of 20 drift-kept scrambles/.test(r1s.verdict) && r1s.calibration.calibrated === false, r1s.verdict);
+  ok("... and its placebo percentiles are null, not 0", r1s.placebo.p50PctPerMonth === null && r1s.placebo.p95PctPerMonth === null, JSON.stringify(r1s.placebo));
+  ok("the calibration limit defaults to R313's 0.05, and a rule may not loosen it (0.2 refused; 0.01 accepted)", rd.calibration.limit === 0.05 && (() => { try { B.checkRule(baseRule({ controls: { placeboDraws: 100, placeboSeed: 313, floorSeeds: 20, leakSeeds: [1, 2], maxWholeRuleFalsePass: 0.2 } })); return false; } catch (e) { return /never looser/.test(e.message); } })() && !!B.checkRule(baseRule({ controls: { placeboDraws: 100, placeboSeed: 313, floorSeeds: 20, leakSeeds: [1, 2], maxWholeRuleFalsePass: 0.01 } })));
+  ok("each drift-kept scramble is judged with its OWN placebo: 20 per-seed placebo t's, all finite and no-edge-sized (|t| < 4)", rd.calibration.perSeed.length === 20 && rd.calibration.perSeed.every((x) => Number.isFinite(x.placeboPairedT) && Math.abs(x.placeboPairedT) < 4) && new Set(rd.calibration.perSeed.map((x) => x.placeboPairedT)).size > 1, JSON.stringify(rd.calibration.perSeed.map((x) => x.placeboPairedT)));
+  ok("R313's control thresholds: leak t < 2, positive control t >= 3 — the runner's verdicts follow them", B.LEAK_T_MAX === 2 && B.POSITIVE_T_MIN === 3 && [rd, rn].every((x) => x.leakTest.every((l) => l.pass === (l.tNW != null && l.tNW < 2)) && x.positiveControl.pass === (x.positiveControl.tNW != null && x.positiveControl.tNW >= 3)));
   // decideRule gate by gate: with everything else passing, each gate alone turns PASS into DID NOT PASS (or CANNOT MEASURE for its own conditions)
   const good = { trades: 500, months: 100, meanNet: 0.01, tNW: 5, halfFirst: 0.01, halfSecond: 0.01, meanNet2x: 0.005, placeboPairedT: 4, floorMeanAboveP95: true, floorTVsP50AtLeastBar: true, leakPass: true, positivePass: true, bar: 1.66, minTrades: 100, minMonths: 36 };
   const flips = { tradesAtLeastMin: { trades: 50 }, monthsAtLeastMin: { months: 20 }, meanNetPositive: { meanNet: -0.001 }, tAtLeastBar: { tNW: 1.5 }, correctedPlaceboPairedTAtLeastBar: { placeboPairedT: 1.65 }, floorMeanAboveP95: { floorMeanAboveP95: false }, floorTVsP50AtLeastBar: { floorTVsP50AtLeastBar: false }, bothHalvesPositive: { halfSecond: -0.001 }, cost2xMeanPositive: { meanNet2x: -0.0001 }, leakTestPassed: { leakPass: false }, positiveControlPassed: { positivePass: false } };
   const cm = ["tradesAtLeastMin", "monthsAtLeastMin", "leakTestPassed", "positiveControlPassed"];
   ok("decideRule: all gates true -> PASS; each of the 11 gates false alone -> DID NOT PASS naming it (CANNOT MEASURE for trades, months, leak test, positive control)", B.decideRule(good).verdict === "PASS" && Object.entries(flips).every(([g, o]) => { const v = B.decideRule({ ...good, ...o }); return v.failed.join() === g && (cm.includes(g) ? /^CANNOT MEASURE/.test(v.verdict) : v.verdict === "DID NOT PASS"); }));
   ok("the positive control's verdict is its own t >= 3; the leak test's is t < 2 with an unmeasured (null) t FAILING (R313)", [rd].every((x) => x.positiveControl.pass === (x.positiveControl.tNW != null && x.positiveControl.tNW >= 3) && x.leakTest.every((l) => l.pass === (l.tNW != null && l.tNW < 2))));
+  // the runner passes window.lastBar and window.to on to the bar loader
+  const rl = RUN.run(baseRule({ window: { from: "2010-01-01", to: "2016-12-30", lastBar: "2016-12-30" } }), path.join(TMP, "edge"), { NB });
+  ok("the runner applies window.lastBar: every symbol's bars after it are dropped and counted; no trade or mark after it", Object.values(rl.data.files).every((f) => f.afterLastBarDropped > 200 && f.last <= "2016-12-30") && rl.trades.every((x) => x.exitDate <= "2016-12-30") && rl.open.every((x) => x.markDate <= "2016-12-30"));
+  let ec = null; try { RUN.run(baseRule({ window: { from: "2010-01-01", to: "2019-12-31", lastBar: "2019-12-31" } }), path.join(TMP, "edge"), { NB }); } catch (x) { ec = x.message; }
+  ok("the runner applies coverage: a window running past the files' end is REFUSED", /coverage/.test(ec || ""), ec);
+  let eL = null; try { RUN.run(baseRule({ window: { from: "2010-01-01", to: "2017-12-31" } }), path.join(TMP, "edge"), { NB }); } catch (x) { eL = x.message; }
+  ok("a REGISTERED rule without window.lastBar: REFUSED (a read must not depend on when the bars were fetched)", /window\.lastBar/.test(eL || ""), eL);
   // a planted edge too weak to clear the bar does not pass either
   const dir = path.join(TMP, "weak"); SYMS.slice(0, 3).forEach((s, i) => writeBars(dir, s, synth(500 + i, 3 * 261, 0.0005)));
-  const rw = RUN.run(baseRule({ universe: SYMS.slice(0, 3), window: { from: "2010-01-01", to: "2012-12-31" } }), dir, { NB });
+  const rw = RUN.run(baseRule({ universe: SYMS.slice(0, 3), window: { from: "2010-01-01", to: "2012-12-31", lastBar: "2012-12-31" } }), dir, { NB });
   ok(`a tiny edge on 3 symbols x 3 years: not PASS (${rw.verdict})`, !/^PASS/.test(rw.verdict));
-  const rf = RUN.run(baseRule({ universe: ["AAA"], window: { from: "2010-01-01", to: "2010-06-30" } }), path.join(TMP, "edge"), { NB });
+  const rf = RUN.run(baseRule({ universe: ["AAA"], window: { from: "2010-01-01", to: "2010-06-30", lastBar: "2010-06-30" } }), path.join(TMP, "edge"), { NB });
   ok(`too few trades / months: CANNOT MEASURE (${rf.verdict}); a leak scramble with no measurable t FAILS it`, /^CANNOT MEASURE — \d+ trades < 100; \d+ months < 36/.test(rf.verdict) && rf.leakTest.every((l) => l.tNW != null || l.pass === false));
 });
 
@@ -151,9 +165,11 @@ section("refusals — bars and rules", () => {
   const refuse = (sym, bars, re) => { writeBars(dir, sym, bars); let e = null; try { B.loadBars(dir, sym); } catch (x) { e = x.message; } return re.test(e || ""); };
   ok("a missing bar file: REFUSED", (() => { try { B.loadBars(dir, "NOPE"); return false; } catch (e) { return /no bar file/.test(e.message); } })());
   ok("high < low, a price <= 0 or NaN, a duplicate date, dates out of order, a malformed date: each REFUSED", refuse("HL", good.map((b, i) => (i === 50 ? { ...b, h: b.l - 1 } : b)), /high .* < low/) && refuse("NEG", good.map((b, i) => (i === 7 ? { ...b, c: -1 } : b)), /finite number > 0/) && refuse("NAN", good.map((b, i) => (i === 7 ? { ...b, o: "x" } : b)), /finite number > 0/) && refuse("DUP", [...good.slice(0, 10), good[9], ...good.slice(10)], /strictly increase/) && refuse("ORD", [good[1], good[0], ...good.slice(2)], /strictly increase/) && refuse("BADD", good.map((b, i) => (i === 3 ? { ...b, t: "2010-13-45" } : b)), /bad date/));
-  ok("an open or close outside [low, high], and an impossible date (2010-02-30): each REFUSED", refuse("OUT", good.map((b, i) => (i === 9 ? { ...b, c: b.h * 1.01 } : b)), /outside \[low, high\]/) && refuse("FEB", good.map((b, i) => (i === 3 ? { ...b, t: "2010-02-30" } : b)), /bad date/));
+  ok("an open or close outside [low, high], and an impossible date (2010-02-30): each REFUSED", refuse("OUT", good.map((b, i) => (i === 9 ? { ...b, c: b.h * 1.01 } : b)), /outside \[low, high\]/) && refuse("OPN", good.map((b, i) => (i === 9 ? { ...b, o: b.l * 0.99 } : b)), /outside \[low, high\]/) && refuse("FEB", good.map((b, i) => (i === 3 ? { ...b, t: "2010-02-30" } : b)), /bad date/));
   writeBars(dir, "LAST", good);
   ok("window.lastBar (the forming-bar guard): bars after it are dropped and counted; a file that ends before the window's end is REFUSED (coverage)", (() => { const L = B.loadBars(dir, "LAST", { lastBar: good[200].t }); return L.bars.length === 201 && L.afterLastDropped === 99; })() && (() => { try { B.loadBars(dir, "LAST", { coverTo: "2015-12-31" }); return false; } catch (e) { return /coverage/.test(e.message); } })());
+  ok("coverage allows 7 days (a holiday week), not 8: a file ending 7 days before the window's end loads, 8 days is REFUSED", (() => { const last = good[good.length - 1].t, plus = (k) => new Date(Date.parse(last + "T00:00:00Z") + k * 86400000).toISOString().slice(0, 10); B.loadBars(dir, "LAST", { coverTo: plus(7) }); try { B.loadBars(dir, "LAST", { coverTo: plus(8) }); return false; } catch (e) { return /coverage/.test(e.message); } })());
+  ok("entries start Jan 1 of the first FULL year: data from 2010-01-04 -> 2010-01-01; from 2010-01-05 -> 2011-01-01; never before window.from", B.entryFromOf("2010-01-04", "2000-01-01") === "2010-01-01" && B.entryFromOf("2010-01-05", "2000-01-01") === "2011-01-01" && B.entryFromOf("2010-01-04", "2012-01-01") === "2012-01-01");
   writeBars(dir, "WKD", [...good.slice(0, 5), { ...good[5], t: "2010-01-09" }, ...good.slice(6)].filter((b, i) => i !== 6 || true));
   ok("a weekend row is dropped and counted (as R313 did), not traded", (() => { const L = B.loadBars(dir, "WKD"); return L.weekendDropped === 1 && !L.bars.some((b) => b.t === "2010-01-09"); })());
   fs.writeFileSync(path.join(dir, "CSV.csv"), "Date,Open,High,Low,Close,Volume\n" + good.slice(0, 20).map((b) => [b.t, b.o, b.h, b.l, b.c, b.v].join(",")).join("\n") + "\n");
@@ -176,7 +192,7 @@ section("the CLI end to end (temp tree: sealed once, read-only, verified, tamper
   for (const f of ["bt-core.cjs", "bt-run.cjs"]) fs.copyFileSync(path.join(BT, f), path.join(TB, "bt", f));
   fs.copyFileSync(path.join(REPO, "backend", "lib", "atomic-write.js"), path.join(TB, "lib", "atomic-write.js"));
   fs.writeFileSync(path.join(TB, "package.json"), '{"type":"commonjs"}');   // stands in for home's backend/package.json (absent from the clean copy)
-  fs.copyFileSync(NB.path, path.join(T, "factory", "lib", "nullbar.cjs"));   // the server layout: <root>/factory/lib/nullbar.cjs
+  fs.copyFileSync(path.join(REPO, "docs", "server", "wave6-agents", "server", "factory", "lib", "nullbar.cjs"), path.join(T, "factory", "lib", "nullbar.cjs"));   // the PORT (self-contained), also at home   // the server layout: <root>/factory/lib/nullbar.cjs
   const ruleF = path.join(TMP, "rule.json"); fs.writeFileSync(ruleF, JSON.stringify(baseRule()));
   const out = path.join(TMP, "results", "edge.json"); fs.mkdirSync(path.dirname(out));
   const cli = (...a) => cp.spawnSync(process.execPath, [path.join(TB, "bt", "bt-run.cjs"), ...a], { encoding: "utf8", cwd: T });
@@ -185,7 +201,7 @@ section("the CLI end to end (temp tree: sealed once, read-only, verified, tamper
   const j = JSON.parse(fs.readFileSync(out, "utf8"));
   ok("the sealed file holds the rule, every bar file's sha256, the code's sha256, the null bar used, every trade, mean, t (month unit), costs, placebo, floor, leak, positive control, gates",
     j.schema === "bt-result-v1" && j.rule.id === "FIXTURE-IBS" && Object.keys(j.data.files).length === 10 && Object.values(j.data.files).every((f) => /^[0-9a-f]{64}$/.test(f.sha256)) && /^[0-9a-f]{64}$/.test(j.code.files["bt-core.cjs"]) && /factory/.test(j.code.nullBar.file) &&
-    j.trades.length === j.stats.trades && Number.isFinite(j.stats.tNet) && /month/.test(j.unit) && j.costs.roundTrip === 0.0006 && Number.isFinite(j.placebo.pairedT) && j.floor.seeds === 10 && j.leakTest.length === 2 && "positiveControl" in j && j.gates.tAtLeastBar === true);
+    j.trades.length === j.stats.trades && Number.isFinite(j.stats.tNet) && /month/.test(j.unit) && j.costs.roundTrip === 0.0006 && Number.isFinite(j.placebo.pairedT) && j.floor.seeds === 20 && j.leakTest.length === 2 && "positiveControl" in j && j.gates.tAtLeastBar === true);
   ok("the file is read-only (0444)", (fs.statSync(out).mode & 0o777) === 0o444);
   const v = cli("--verify", out);
   ok("--verify: INTACT", v.status === 0 && /INTACT/.test(v.stdout), v.stdout + v.stderr);

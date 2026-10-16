@@ -163,6 +163,8 @@ function loadBars(dir, sym, { lastBar = null, coverTo = null } = {}) {
 
 // ── NEW: the rule's signals ──────────────────────────────────────────────────────────────────────────────────────────────
 const FAMILIES = ["ibs-dip", "rsi-dip"];
+/** R313's control thresholds (registry: leak test t_NW < 2, positive control t_NW >= 3) */
+const LEAK_T_MAX = 2, POSITIVE_T_MIN = 3;
 /** validate a bt-rule-v1 (throws with every problem it finds) */
 function checkRule(R) {
   const bad = [], e = (s) => bad.push(s), P = (R && R.params) || {}, en = P.entry || {}, ex = P.exit || {};
@@ -193,7 +195,7 @@ function checkRule(R) {
   const C2 = (R && R.controls) || {};
   if (!(Number.isInteger(C2.placeboDraws) && C2.placeboDraws >= 10 && Number.isInteger(C2.placeboSeed))) e("controls: integer placeboDraws >= 10 and placeboSeed");
   if (!(Number.isInteger(C2.floorSeeds) && C2.floorSeeds >= 5)) e("controls.floorSeeds: an integer >= 5");
-  if (C2.maxWholeRuleFalsePass != null && !(fin(C2.maxWholeRuleFalsePass) && C2.maxWholeRuleFalsePass >= 0 && C2.maxWholeRuleFalsePass <= 0.2)) e("controls.maxWholeRuleFalsePass in [0, 0.2] (R313: 0.05)");
+  if (C2.maxWholeRuleFalsePass != null && !(fin(C2.maxWholeRuleFalsePass) && C2.maxWholeRuleFalsePass >= 0 && C2.maxWholeRuleFalsePass <= 0.05)) e("controls.maxWholeRuleFalsePass in [0, 0.05] (R313's limit is 0.05; a rule may be stricter, never looser)");
   if (!(Array.isArray(C2.leakSeeds) && C2.leakSeeds.length >= 1 && C2.leakSeeds.every(Number.isInteger))) e("controls.leakSeeds: a list of integer seeds");
   if (bad.length) throw new Error("the rule is refused:\n  - " + bad.join("\n  - "));
   return R;
@@ -274,5 +276,5 @@ function barFor(n, { variants = 1, seed = 313, trialsNw = 50000, trialsIid = 200
   return { n, variants, seed, trialsNw, trialsIid, nwSim: r3(nw), iid: r3(iid), bar: r3(Math.max(nw, iid)), nullBarFile: nb.path || null, nullBarSha: nb.sha || null };
 }
 
-module.exports = { fin, r4, r3, r1, sha256, ibsOf, mkTrade, simulate, sma, rmaSeeded, rsiWilder, mean, nwT, monthlySeries, summarise, strip, nearestRank, mulberry, hash, scramble,
+module.exports = { LEAK_T_MAX, POSITIVE_T_MIN, fin, r4, r3, r1, sha256, ibsOf, mkTrade, simulate, sma, rmaSeeded, rsiWilder, mean, nwT, monthlySeries, summarise, strip, nearestRank, mulberry, hash, scramble,
   shiftMonth, placeboPrepC, placeboRunC, pairedDiffs, floorGate, isWeekend, loadBars, FAMILIES, checkRule, entryFromOf, prepRule, simulateCapped, simulateRule, decideRule, loadNullBar, barFor };

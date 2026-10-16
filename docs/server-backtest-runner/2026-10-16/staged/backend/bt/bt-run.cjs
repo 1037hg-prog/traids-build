@@ -58,8 +58,8 @@ function run(rule, barsDir, opts = {}) {
   const mode = R.registration ? "registered" : opts.exploratory ? "exploratory" : null;
   if (mode === "exploratory" && R.reservedForRegistration) throw new Error("this rule is RESERVED FOR REGISTRATION (reservedForRegistration: true): its universe's bars must not be read before the test is registered at home — no exploratory run");
   if (!mode) throw new Error("the rule carries no `registration` (it is not a registered test): run it with --exploratory, and its result is labelled EXPLORATORY — never a read");
-  if (R.registration && !(typeof R.registration.id === "string" && /^\d{4}-\d{2}-\d{2}$/.test(R.registration.registeredOn || "") && fin(R.bar.tRequired)))
-    throw new Error("a registered rule needs registration.id, registration.registeredOn (YYYY-MM-DD) and its registered bar.tRequired");
+  if (R.registration && !(typeof R.registration.id === "string" && /^\d{4}-\d{2}-\d{2}$/.test(R.registration.registeredOn || "") && fin(R.bar.tRequired) && R.window.lastBar))
+    throw new Error("a registered rule needs registration.id, registration.registeredOn (YYYY-MM-DD), its registered bar.tRequired and window.lastBar (the forming-bar guard: a read must not depend on when the bars were fetched)");
   // data
   const files = {}, barsBy = {};
   for (const s of R.universe) { const L = B.loadBars(barsDir, s, { lastBar: R.window.lastBar || null, coverTo: R.window.to }); barsBy[s] = L.bars; files[s] = { file: L.file, sha256: L.sha, bars: L.bars.length, first: L.bars[0].t, last: L.bars[L.bars.length - 1].t, weekendRowsDropped: L.weekendDropped, afterLastBarDropped: L.afterLastDropped }; }
@@ -83,26 +83,28 @@ function run(rule, barsDir, opts = {}) {
     const x = runRule(R, sb), Sx = summarise(x.tr), S2x = summarise(x.tr, { netOf: (y) => y.gross - R.costs.stress });
     const plx = x.tr.length ? placeboRunC(placeboPrepC(x.tr, x.PS), x.PS, { draws: C.placeboDraws, seed: C.placeboSeed, cost: R.costs.roundTrip }) : null;
     kept.push({ seed, S: Sx, S2: S2x, placeboPairedT: plx ? nwT(pairedDiffs(Sx, plx)) : null });
+    if (opts.progress) opts.progress(`drift-kept scramble ${seed} of ${C.floorSeeds}`);
   }
   const floorOf = (rows) => { const v = rows.map((r) => r.S.meanNet).filter(fin).sort((a, b) => a - b); return { seeds: v.length, p50: nearestRank(v, 0.5), p95: nearestRank(v, 0.95) }; };
-  const floor = floorOf(kept), floorComplete = floor.seeds === C.floorSeeds;
+  // complete (R313's ok): every seed gave a mean AND a measurable placebo t — a seed that cannot be judged is never counted as "not passing"
+  const floor = floorOf(kept), floorComplete = floor.seeds === C.floorSeeds && kept.every((r) => fin(r.placeboPairedT));
   const fg = floorGate(S, floor, t);
   // each drift-kept scramble judged by the full rule against the floor of the OTHER seeds (leave-one-out; leak + positive control taken as passed)
   const judged = kept.map((r, j) => { const fl = floorOf(kept.filter((_, i) => i !== j)), g = floorGate(r.S, fl, t);
     return B.decideRule({ trades: r.S.trades, months: r.S.months, meanNet: r.S.meanNet, tNW: r.S.tNetRaw, halfFirst: r.S.halves && r.S.halves.first.meanNet, halfSecond: r.S.halves && r.S.halves.second.meanNet,
       meanNet2x: r.S2.meanNet, placeboPairedT: r.placeboPairedT, floorMeanAboveP95: g.meanAboveP95, floorTVsP50AtLeastBar: g.tVsP50AtLeastBar, leakPass: true, positivePass: true, bar: t, minTrades: R.gates.minTrades, minMonths: R.gates.minMonths }).verdict; });
   const maxFP = fin(C.maxWholeRuleFalsePass) ? C.maxWholeRuleFalsePass : 0.05, falsePass = judged.length ? judged.filter((v) => v === "PASS").length / judged.length : null;
-  const calibration = { driftKeptSeeds: judged.length, passes: judged.filter((v) => v === "PASS").length, falsePass, limit: maxFP, calibrated: falsePass != null && falsePass <= maxFP && floorComplete,
+  const calibration = { perSeed: kept.map((r, j) => ({ seed: r.seed, verdict: judged[j], tNW: r4(r.S.tNetRaw), placeboPairedT: r4(r.placeboPairedT) })), driftKeptSeeds: judged.length, passes: judged.filter((v) => v === "PASS").length, falsePass, limit: maxFP, calibrated: falsePass != null && falsePass <= maxFP && floorComplete,
     note: "R313's design: the full decision rule on the drift-kept scrambles (no timing edge by construction), each against the floor of the other seeds; above the limit the read is HELD" };
   // leak test (drift-free shuffles) and positive control (own winners)
-  const leak = C.leakSeeds.map((seed) => { const sb = {}; for (const s of R.universe) sb[s] = scramble(barsBy[s], seed, s, true); const x = summarise(runRule(R, sb).tr); return { seed, trades: x.trades, months: x.months, tNW: r4(x.tNetRaw), pass: x.tNetRaw != null && x.tNetRaw < 2 }; });   // R313: an unmeasured t (null) FAILS the leak test
-  const pos = summarise(tr.filter((x) => x.net > 0)), positive = { trades: pos.trades, months: pos.months, tNW: r4(pos.tNetRaw), pass: pos.tNetRaw != null && pos.tNetRaw >= 3 };
+  const leak = C.leakSeeds.map((seed) => { const sb = {}; for (const s of R.universe) sb[s] = scramble(barsBy[s], seed, s, true); const x = summarise(runRule(R, sb).tr); return { seed, trades: x.trades, months: x.months, tNW: r4(x.tNetRaw), pass: x.tNetRaw != null && x.tNetRaw < B.LEAK_T_MAX }; });   // R313: an unmeasured t (null) FAILS the leak test
+  const pos = summarise(tr.filter((x) => x.net > 0)), positive = { trades: pos.trades, months: pos.months, tNW: r4(pos.tNetRaw), pass: pos.tNetRaw != null && pos.tNetRaw >= B.POSITIVE_T_MIN };
   const J = B.decideRule({ trades: S.trades, months: S.months, meanNet: S.meanNet, tNW: S.tNetRaw, halfFirst: S.halves && S.halves.first.meanNet, halfSecond: S.halves && S.halves.second.meanNet,
     meanNet2x: S2.meanNet, placeboPairedT, floorMeanAboveP95: fg.meanAboveP95, floorTVsP50AtLeastBar: fg.tVsP50AtLeastBar, leakPass: leak.every((x) => x.pass), positivePass: positive.pass,
     bar: t, minTrades: R.gates.minTrades, minMonths: R.gates.minMonths });
   // the verdict: CANNOT MEASURE first (the rule's own), then a HELD read when the floor is incomplete or the calibration is over its limit
   let verdict = J.verdict;
-  if (!/^CANNOT MEASURE/.test(verdict) && !floorComplete) verdict = `CANNOT MEASURE — the drift-kept floor has ${floor.seeds} usable seeds of ${C.floorSeeds}`;
+  if (!/^CANNOT MEASURE/.test(verdict) && !floorComplete) verdict = `CANNOT MEASURE — of ${C.floorSeeds} drift-kept scrambles, ${floor.seeds} gave a mean and ${kept.filter((r) => fin(r.placeboPairedT)).length} a measurable placebo t (all are needed for the floor and the calibration)`;
   else if (!/^CANNOT MEASURE/.test(verdict) && !calibration.calibrated) verdict = `HELD — the whole rule passes ${calibration.passes} of ${calibration.driftKeptSeeds} drift-kept no-edge scrambles (${(100 * falsePass).toFixed(1)}% > ${100 * maxFP}%): its verdict (${J.verdict}) is not a read until the registry amends it`;
   const codeFiles = ["bt-core.cjs", "bt-run.cjs"].map((f) => [f, sha256(fs.readFileSync(path.join(__dirname, f)))]);
   return {
@@ -164,7 +166,7 @@ function main(argv, deps = {}) {
   try {
     if (fs.existsSync(out)) throw new Error(`${out} exists — a sealed result is never overwritten (choose a new --out)`);
     const rule = JSON.parse(fs.readFileSync(rf, "utf8"));
-    const body = run(rule, bd, { exploratory: a.includes("--exploratory"), NB: deps.NB });
+    const body = run(rule, bd, { exploratory: a.includes("--exploratory"), NB: deps.NB, progress: (m) => err(`  ... ${m}`) });
     const sealed = seal(body, deps.now ? deps.now() : new Date());
     const writeJson = deps.writeJson || require(path.join(__dirname, "..", "lib", "atomic-write.js")).writeJsonAtomic;
     writeSealed(out, sealed, writeJson);

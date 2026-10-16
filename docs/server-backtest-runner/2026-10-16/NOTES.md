@@ -27,7 +27,7 @@ Three NEW files. No live file is edited, so `base/` holds no copy:
 
 ## Checks (cloud, 2026-10-16)
 
-`node docs/server-backtest-runner/2026-10-16/selftest.cjs` → `ALL 62 CASES PASSED`, using synthetic bars only. It covers:
+`node docs/server-backtest-runner/2026-10-16/selftest.cjs` → `ALL 72 CASES PASSED`, using synthetic bars only. It covers:
 
 - **Verbatim reuse:** 20 functions identical to r313's text.
 - **Hand-computed known answer:** two trades at chosen closes, net = gross − 0.06% exactly, the month mean, an open trade not counted, NW t on [1%, 2%, −0.5%, 1.5%] = 3.5777, and the time cap.
@@ -44,7 +44,7 @@ Three NEW files. No live file is edited, so `base/` holds no copy:
 ## The null bar value (resolved by the checker)
 
 - `barFor(320, 1 variant, seed 313)` reproduces R313's **NW part exactly (1.66)**.
-- The null-bar part on the port gives 1.666. R313's registry says 1.658, but that was an **unseeded** `nullBar` call at registration (`register-r310.js` calls it with no rng, so Math.random). Over 40 seeds the port's p95 at n = 320 spans 1.608–1.674, and several seeds give exactly 1.658. So 1.658 is not a seeded known answer, and the selftest no longer asserts it.
+- The null-bar part on the port gives 1.666. R313's registry says 1.658, but that was an **unseeded** `nullBar` call at registration (`register-r310.js` calls it with no rng, so Math.random). Over 40 seeds the port's p95 at n = 320 spans 1.608–1.674, and one of them (seed 23) gives exactly 1.658. "Unseeded" is a strong inference rather than a proven fact: the registry's source names a seed for the NW part and none for the null bar, and `register-r310.js` (R310's registration, the family's precedent) calls nullBar unseeded. No R313 registration script is in this copy. So 1.658 is not a seeded known answer, and the selftest no longer asserts it.
 - What the selftest asserts instead: bar = max(NW part, null-bar part). At home, where both exist, it also asserts that **the house `backend/lib/null-bar.js` and the server's port give the same value for the same seeded call**. The port's header claims its own selftest proves this, but `docs/server/wave6-agents/selftest.cjs` has no such check.
 - Registered tests are unaffected: their bar is the one in the rule. Only a computed (exploratory) bar uses `barFor`.
 
@@ -81,6 +81,34 @@ Cycle 1 result: 43/43 passed, but 15 of 33 mutations survived, including every t
 - **No case was weakened or removed.** The one changed case is the home null-bar assertion, which is replaced by the house-equals-port check (reason above).
 - **Note:** the verbatim `simulate` comment "an exit day … can never also be an entry" is untrue for `rsi-dip` with `closeAboveSma`. It is kept byte for byte because it is R313's text. The behaviour is the conservative one: no same-day re-entry.
 
+## Changes after checker cycle 2
+
+Cycle 2 result: no regressions and no blocking defect. All 11 gates were pinned, but 16 of 56 mutants survived. Several fixes worked but no case pinned them. The fixes:
+
+- **Calibration completeness:** every drift-kept seed must give a mean **and** a measurable placebo t (R313's `ok`). Otherwise the result is CANNOT MEASURE, never "calibrated with 0 passes". A one-symbol universe shows this.
+- **The limit:** `controls.maxWholeRuleFalsePass` is capped at R313's 0.05. A rule may be stricter, never looser.
+- **Registered rules need `window.lastBar`,** so a read never depends on when the bars were fetched.
+- **Per-seed record:** the calibration's per-seed verdicts and placebo t's are in the sealed file.
+- **Thresholds:** R313's control thresholds are named constants (leak t < 2, positive control t ≥ 3), and both are pinned.
+- **Progress:** the CLI prints progress to stderr. A real-size run (24 symbols × 27 years, 60 seeds × 500 draws) takes about 2.5 minutes.
+- **New cases:**
+  - incomplete calibration;
+  - null placebo percentiles;
+  - the default and capped limit;
+  - per-seed placebo t's;
+  - the thresholds;
+  - the runner applying `lastBar` and coverage;
+  - a registered rule without `lastBar`;
+  - an open outside [low, high];
+  - the 7-day coverage edge;
+  - the first-full-year start.
+- **Coverage remains 7 days**, which holds a holiday week. The checker found no false refusal near holidays. A symbol ending a few days early only leaves its last trades open (listed, not counted).
+- **The CLI case** now copies the null-bar port (self-contained), so it does not depend on the house file's own requires at home.
+- **Test edits, with reasons:**
+  - The fixture rule's `floorSeeds` went from 10 to 20, and two expectations follow it (floor seeds 20; "at most 1 pass", i.e. ≤ 5%). Reason: with 10 seeds, one chance pass is 10%, over R313's 5% limit, so the planted edge was correctly HELD; R313 itself registers 60 seeds. The no-edge, drift-kept and HELD cases are unchanged in what they demand.
+  - Every fixture window now carries `lastBar`, because registered rules must (above).
+  - No case was removed (62 → 72).
+
 ## Missing from this clean copy (not reconstructed)
 
 - **`backend/lib/null-bar.js`.** The port in `docs/server/wave6-agents/server/factory/lib/nullbar.cjs` was used (see the finding above).
@@ -91,7 +119,7 @@ Cycle 1 result: 43/43 passed, but 15 of 33 mutations survived, including every t
 
 ## Operator steps at home
 
-1. `node docs/server-backtest-runner/2026-10-16/selftest.cjs`. It must end `ALL … PASSED`, with the null-bar case counted at 1.658 (see the finding).
+1. `node docs/server-backtest-runner/2026-10-16/selftest.cjs`. It must end `ALL … PASSED`. At home the house-equals-port null-bar case is counted (see above).
 2. `node docs/server-backtest-runner/2026-10-16/deploy.cjs --plan`, then `--apply`. Then `record.cjs --dry` and record the change.
 3. On the server tree, `backend/package.json` must make `backend/lib/*.js` CommonJS (as at home); otherwise the final write fails. Copy `backend/bt/` to the server tree (`/home/traids/traids/backend/bt/`) by the usual deploy path. Check that the server has `backend/lib/atomic-write.js`, and either `backend/lib/null-bar.js` or `factory/lib/nullbar.cjs`.
 4. To make the first use a test:
