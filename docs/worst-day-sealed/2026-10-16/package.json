@@ -1,0 +1,6 @@
+{
+  "name": "traids-docs-worst-day-sealed-2026-10-16",
+  "private": true,
+  "type": "commonjs",
+  "description": "Module-type marker for this staged package ONLY. The repo root package.json says \"type\": \"module\", so a .js file under docs/ would load as ESM; backend/package.json has no \"type\", so every .js under backend/ is CommonJS. The six files in staged/ are CommonJS because that is what they will be at backend/worst-day/, and this marker makes them load the same way from here (fixtures/make-bars.cjs, and anything else that reads the staged copies in place). It ships with the package and is never copied to the repo."
+}
