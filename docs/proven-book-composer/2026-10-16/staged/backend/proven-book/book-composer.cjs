@@ -27,18 +27,27 @@
  *
  *   node backend/proven-book/book-composer.cjs --input <nightly.json> --config <config.json> --out <plan.json>   writes the plan (atomic)
  *   node backend/proven-book/book-composer.cjs --input <nightly.json> --config <config.json>                    prints it, writes nothing
+ * TIMING: every order of the plan is meant to fill at asOf's CLOSE (the dip rules and R180 are close-to-close). If the proven book executes
+ * the plan later (the next session), each sleeve shifts by a session — confirm at home before use.
  * nightly.json (proven-book-nightly-v1): { asOf: "YYYY-MM-DD", cash, positions: [{ sleeve, sym, qty, price }], prices: { SYM: last close },
  *   intents: { R313: { exits: [sym], entries: [{ sym, rank }] }, R328: {...}, R180: { want: true|false } | { monthSessions: [dates] } } }
  */
 "use strict";
 const fs = require("fs"), path = require("path");
 const fin = Number.isFinite, r2 = (x) => Math.round(x * 100) / 100;
+// money comparisons with a hundredth-of-a-cent tolerance: an exact fit (room equal to the cost, give or take float noise) FITS (checker D1)
+const EPS = 1e-4, short = (have, need) => have < need - EPS;
 const DIP = ["R313", "R328"], CAL = "R180", STACKER = "stacker", SLEEVES = [...DIP, CAL, STACKER];
 
 /** R180's registered window (N3): after the close of `asOf`, hold IEF iff asOf is one of the month's sessions -6..-2 (the entry is at the
  *  close of session -6, the exit at the close of session -1). monthSessions: the month's trading sessions (sorted, asOf among them). */
 function r180Want(asOf, monthSessions) {
   const s = [...monthSessions].sort(), i = s.indexOf(asOf);
+  if (new Set(s).size !== s.length) throw new Error("R180: monthSessions holds a date twice");
+  // the list must be the WHOLE month (from the exchange calendar), not the sessions seen so far: its last session must fall in the month's
+  // last 5 calendar days (a month never ends with more than a weekend plus a holiday after its last session)
+  { const [y, m] = asOf.split("-").map(Number), dim = new Date(Date.UTC(y, m, 0)).getUTCDate(), lastDay = +s[s.length - 1].slice(8, 10);
+    if (lastDay < dim - 4) throw new Error(`R180: monthSessions ends ${s[s.length - 1]} — it must be the whole month's sessions (from the calendar), not those seen so far`); }
   if (i < 0) throw new Error(`R180: ${asOf} is not a session of the month given`);
   if (s.some((d) => d.slice(0, 7) !== asOf.slice(0, 7))) throw new Error("R180: monthSessions must all be in asOf's month");
   const fromEnd = s.length - i;              // 1 = the last session
@@ -72,7 +81,12 @@ function checkNightly(n) {
   }
   const seen = new Set(); for (const p of (n && n.positions) || []) { const k = p.sleeve + " " + p.sym; if (seen.has(k)) e(`positions: ${k} twice`); seen.add(k); }
   const I = (n && n.intents) || {};
-  for (const s of DIP) { const x = I[s] || { exits: [], entries: [] }; if (!Array.isArray(x.exits) || !Array.isArray(x.entries)) e(`intents.${s}: exits [] and entries [] (an empty list when none)`); }
+  for (const s of DIP) {
+    const x = I[s];   // REQUIRED: a missing block means its runner did not report — never read as "nothing to do" (checker D2)
+    if (!x || !Array.isArray(x.exits) || !Array.isArray(x.entries)) { e(`intents.${s}: exits [] and entries [] (an empty list when none; a missing block is refused)`); continue; }
+    for (const [k, en] of x.entries.entries()) if (!en || typeof en !== "object" || typeof en.sym !== "string" || !en.sym || (en.rank != null && !fin(en.rank))) e(`intents.${s}.entries[${k}]: { sym, rank? (a number) }`);
+    for (const [k, sym] of x.exits.entries()) if (typeof sym !== "string" || !sym) e(`intents.${s}.exits[${k}]: a symbol`);
+  }
   if (!I[CAL] || !(typeof I[CAL].want === "boolean" || Array.isArray(I[CAL].monthSessions))) e(`intents.${CAL}: want (true/false) or monthSessions`);
   if (bad.length) throw new Error("tonight's input is refused:\n  - " + bad.join("\n  - "));
   return n;
@@ -84,6 +98,7 @@ function checkNightly(n) {
  */
 function compose(nightly, config) {
   const C = checkConfig(config), N = checkNightly(nightly), P = N.prices, px = (s) => P[s];
+  for (const p of N.positions) if (p.sleeve === CAL && p.sym !== C.sleeves[CAL].sym) throw new Error(`a held R180 position is ${p.sym}, but the config's R180 instrument is ${C.sleeves[CAL].sym} — refused (it could never be closed by R180's window)`);
   const held = N.positions.map((p) => ({ ...p, usd: p.qty * px(p.sym) }));
   const equity = N.cash + held.reduce((a, p) => a + p.usd, 0), capUsd = C.exposureCap * equity;
   const orders = [], skipped = [], notes = [];
@@ -135,20 +150,20 @@ function compose(nightly, config) {
     if (pos.has(x.sleeve + " " + x.sym)) { skipped.push({ sleeve: x.sleeve, sym: x.sym, why: "already held by this sleeve (one position per name)" }); continue; }
     const qty = Math.floor(slot / price), usd = qty * price;
     if (qty < 1) { skipped.push({ sleeve: x.sleeve, sym: x.sym, why: `one share (${price}) is more than the slot (${slot})` }); continue; }
-    if (room() < usd) {
+    if (short(room(), usd)) {
       // free room from the yielding layers: the Stacker first, then R180 — both are SALES, so the room they add is in `pending`: it counts
       // against the CAP at once, and against CASH only when countExitProceeds (a cash account spends settled cash). Nothing is sold unless
       // the entry then fits at full size: a yield that would not make room is never made.
       const yieldable = [[STACKER, C.stackerYields], [CAL, C.r180YieldsToDips]].filter(([, on]) => on).reduce((a, [sl]) => a + [...pos.values()].filter((p) => p.sleeve === sl).reduce((b, p) => b + p.qty * px(p.sym), 0), 0);
-      const fits = capUsd - gross() + yieldable >= usd && spendable() + (C.countExitProceeds ? yieldable : 0) >= usd;
+      const fits = !short(capUsd - gross() + yieldable, usd) && !short(spendable() + (C.countExitProceeds ? yieldable : 0), usd);
       if (fits) for (const [sl, onOff] of [[STACKER, C.stackerYields], [CAL, C.r180YieldsToDips]]) {
-        if (!onOff || room() >= usd) continue;
+        if (!onOff || !short(room(), usd)) continue;
         const capShort = usd - (capUsd - gross()), cashShort = usd - spendable();
         const need = Math.max(capShort, C.countExitProceeds ? cashShort : 0);
-        if (need > 0) { const f = yieldFrom(sl, need); pending += f; }
+        if (need > EPS) { const f = yieldFrom(sl, need - EPS); pending += f; }
       }
     }
-    if (room() < usd) { skipped.push({ sleeve: x.sleeve, sym: x.sym, why: `no room at full size (needs ${r2(usd)}, room ${r2(Math.max(0, room()))}) — skipped, never shrunk` }); continue; }
+    if (short(room(), usd)) { skipped.push({ sleeve: x.sleeve, sym: x.sym, why: `no room at full size (needs ${r2(usd)}, room ${r2(Math.max(0, room()))}) — skipped, never shrunk` }); continue; }
     orders.push({ sleeve: x.sleeve, sym: x.sym, side: "buy", qty, estUsd: r2(usd), why: "its rule's entry, full slot" });
     if (C.countExitProceeds) { const fromPending = Math.min(pending, usd); pending -= fromPending; cash -= usd - fromPending; } else cash -= usd;
     pos.set(x.sleeve + " " + x.sym, { sleeve: x.sleeve, sym: x.sym, qty, price });
@@ -159,7 +174,7 @@ function compose(nightly, config) {
     const cur = pos.get(calKey), curQ = cur ? cur.qty : 0, targetQ = Math.floor(cal.targetUsd / price);
     if (curQ > targetQ) { const q = curQ - targetQ; orders.push({ sleeve: CAL, sym: cal.sym, side: "sell", qty: q, estUsd: r2(q * price), why: "R180 above its target" }); pending += q * price; if (targetQ) cur.qty = targetQ; else pos.delete(calKey); }
     else if (curQ < targetQ) {
-      const q = Math.min(targetQ - curQ, Math.floor(Math.max(0, room()) / price));
+      const q = Math.min(targetQ - curQ, Math.floor((Math.max(0, room()) + EPS) / price));
       if (q > 0) { orders.push({ sleeve: CAL, sym: cal.sym, side: "buy", qty: q, estUsd: r2(q * price), why: q < targetQ - curQ ? "R180 up to what is left" : "R180 to its target" }); if (C.countExitProceeds) { const u = q * price, fp = Math.min(pending, u); pending -= fp; cash -= u - fp; } else cash -= q * price; if (cur) cur.qty += q; else pos.set(calKey, { sleeve: CAL, sym: cal.sym, qty: q, price }); }
       if (curQ + q < targetQ) notes.push(`R180 below its target: ${curQ + q} of ${targetQ} shares (the dip-buys hold the rest of the cap)`);
     }
@@ -169,8 +184,8 @@ function compose(nightly, config) {
   const offerUsd = Math.max(0, Math.min(capUsd - grossAfter, cashAfter) - C.reserveUsd);
   const bySleeve = Object.fromEntries(SLEEVES.map((s) => [s, r2([...pos.values()].filter((p) => p.sleeve === s).reduce((a, p) => a + p.qty * px(p.sym), 0))]));
   const checks = {
-    grossWithinCap: grossAfter <= Math.max(capUsd, dipHeldAfterExits) + 1e-6 && (grossAfter <= capUsd + 1e-6 || !orders.some((o) => o.side === "buy")),
-    noMargin: cash >= -1e-6 && C.exposureCap <= 1,
+    grossWithinCap: grossAfter <= Math.max(capUsd, dipHeldAfterExits) + 2 * EPS && (grossAfter <= capUsd + 2 * EPS || !orders.some((o) => o.side === "buy")),
+    noMargin: cash >= -2 * EPS && C.exposureCap <= 1,
     dipEntriesFullSlotOrSkipped: orders.filter((o) => o.side === "buy" && DIP.includes(o.sleeve)).every((o) => o.qty === Math.floor(C.sleeves[o.sleeve].slotUsd / px(o.sym))),
     heldDipsUntouchedExceptExits: orders.filter((o) => o.side === "sell" && DIP.includes(o.sleeve)).every((o) => o.why === "its rule's exit"),
     offerNonNegative: offerUsd >= 0,

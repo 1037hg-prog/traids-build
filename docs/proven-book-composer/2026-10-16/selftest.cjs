@@ -74,11 +74,31 @@ section("the cap, no margin, dips at full size, R180 and the Stacker yield", () 
   ok("reserveUsd 2,500 is kept back from the offer", h.offer.usd === 100000 - 5000 - 50000 - 2500);
 });
 
+section("checker cycle 1: exact fits, priority, rank, stackerYields", () => {
+  // exact fits (D1): a room equal to the cost, give or take float noise, FITS
+  const x1 = K.compose(NIGHT({ cash: 53563.28, positions: [{ sleeve: "R180", sym: "IEF", qty: 494 }], prices: { ...PX, IEF: 93.12, AAA: 168.44 }, intents: { R313: { exits: [], entries: [{ sym: "AAA" }] }, R328: { exits: [], entries: [] }, R180: { want: true } } }),
+    CFG({ exposureCap: 0.5, countExitProceeds: true, sleeves: { R313: { slotUsd: 3982.56 }, R328: { slotUsd: 5000 }, R180: { sym: "IEF", targetUsd: 50000 } } }));
+  ok("an exact fit after an R180 yield (the checker's case): the dip IS bought at full size; IEF is not sold and bought back in one plan", buys(x1, "R313").length === 1 && !x1.skipped.length && !(sells(x1, "R180").length && buys(x1, "R180").length), JSON.stringify(x1.orders.map((o) => [o.sleeve, o.sym, o.side, o.qty])));
+  const x2 = K.compose(NIGHT({ cash: 32.22, prices: { ...PX, TEN: 10.74 }, intents: { R313: { exits: [], entries: [{ sym: "TEN" }] }, R328: { exits: [], entries: [{ sym: "TEN" }] }, R180: { want: false } } }), CFG({ entryPriority: ["R313", "R328"], sleeves: { R313: { slotUsd: 10.74 }, R328: { slotUsd: 21.48 }, R180: { sym: "IEF", targetUsd: 0 } } }));
+  ok("an exact cash fit with no yield (32.22 = 10.74 + 2 x 10.74): every entry is bought, none skipped", buys(x2).length === 2 && !x2.skipped.length && x2.after.cashUsd === 0, JSON.stringify([x2.orders, x2.skipped]));
+  // priority (D6): R328 first when configured so
+  const tight = { cash: 7000, intents: { R313: { exits: [], entries: [{ sym: "SPY" }] }, R328: { exits: [], entries: [{ sym: "IWM" }] }, R180: { want: false } } };
+  const p1 = K.compose(NIGHT(tight), CFG({ entryPriority: ["R328", "R313"] })), p2 = K.compose(NIGHT(tight), CFG({ entryPriority: ["R313", "R328"] }));
+  ok("entryPriority decides who gets scarce cash: [R328, R313] buys IWM and skips SPY; [R313, R328] the reverse", buys(p1).map((o) => o.sym).join() === "IWM" && p1.skipped[0].sym === "SPY" && buys(p2).map((o) => o.sym).join() === "SPY" && p2.skipped[0].sym === "IWM");
+  const rk = K.compose(NIGHT({ cash: 7000, intents: { R313: { exits: [], entries: [{ sym: "AAA2", rank: 2 }, { sym: "ZZZ", rank: 1 }] }, R328: { exits: [], entries: [] }, R180: { want: false } }, prices: { ...PX, AAA2: 50, ZZZ: 50 } }), CFG());
+  ok("rank beats the alphabet: ZZZ (rank 1) gets the scarce cash before AAA2 (rank 2)", buys(rk).map((o) => o.sym).join() === "ZZZ" && rk.skipped[0].sym === "AAA2");
+  const sy = K.compose(NIGHT({ cash: 50000, positions: [{ sleeve: "R180", sym: "IEF", qty: 300 }, { sleeve: "stacker", sym: "BIL", qty: 200 }], intents: { R313: { exits: [], entries: twelve.map((sym) => ({ sym })) }, R328: { exits: [], entries: [] }, R180: { want: true } } }), CFG({ countExitProceeds: true, stackerYields: false }));
+  ok("stackerYields false: the Stacker is never sold for a dip; R180 yields instead", !sells(sy, "stacker").length && sells(sy, "R180").length >= 1 && buys(sy, "R313").length === 12, JSON.stringify(sells(sy)));
+});
+
 section("refusals", () => {
   const bad = (n, c, re) => { try { K.compose(n, c); return false; } catch (e) { return re.test(e.message); } };
   ok("exposureCap above 1 (margin): REFUSED", bad(NIGHT(), CFG({ exposureCap: 1.2 }), /margin/));
   ok("negative cash (margin in use): REFUSED", bad(NIGHT({ cash: -10 }), CFG(), /negative cash/));
   ok("an unknown sleeve, a short (qty <= 0), a held name with no price, a duplicate position: each REFUSED", bad(NIGHT({ positions: [{ sleeve: "R999", sym: "SPY", qty: 1 }] }), CFG(), /unknown sleeve/) && bad(NIGHT({ positions: [{ sleeve: "R313", sym: "SPY", qty: -5 }] }), CFG(), /positive integer/) && bad(NIGHT({ positions: [{ sleeve: "R313", sym: "ZZZ", qty: 5 }] }), CFG(), /no price/) && bad(NIGHT({ positions: [{ sleeve: "R313", sym: "SPY", qty: 5 }, { sleeve: "R313", sym: "SPY", qty: 5 }] }), CFG(), /twice/));
+  ok("a MISSING R313 or R328 block (its runner did not report), a bare-string entry, a non-numeric rank: each REFUSED (never read as 'nothing to do')", bad(NIGHT({ intents: { R328: { exits: [], entries: [] }, R180: { want: false } } }), CFG(), /intents\.R313/) && bad(NIGHT({ intents: { R313: { exits: [], entries: ["SPY"] }, R328: { exits: [], entries: [] }, R180: { want: false } } }), CFG(), /entries\[0\]/) && bad(NIGHT({ intents: { R313: { exits: [], entries: [{ sym: "SPY", rank: "x" }] }, R328: { exits: [], entries: [] }, R180: { want: false } } }), CFG(), /rank/));
+  ok("a held R180 position on another instrument (TLT while the config says IEF): REFUSED", bad(NIGHT({ positions: [{ sleeve: "R180", sym: "TLT", qty: 5 }], prices: { ...PX, TLT: 90 } }), CFG(), /R180 position is TLT/));
+  ok("R180 monthSessions with a date twice, or only the sessions seen so far: REFUSED", (() => { const oct = ["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30"]; try { K.r180Want("2026-10-27", [...oct, "2026-10-27"]); return false; } catch (e) { if (!/twice/.test(e.message)) return false; } try { K.r180Want("2026-10-15", ["2026-10-01", "2026-10-02", "2026-10-15"]); return false; } catch (e) { return /whole month/.test(e.message); } })());
   ok("a missing slot size, a bad entryPriority, a missing R180 intent: each REFUSED", bad(NIGHT(), CFG({ sleeves: { R313: {}, R328: { slotUsd: 5000 }, R180: { sym: "IEF", targetUsd: 1 } } }), /slotUsd/) && bad(NIGHT(), CFG({ entryPriority: ["R313"] }), /entryPriority/) && bad(NIGHT({ intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] } } }), CFG(), /intents\.R180/));
 });
 

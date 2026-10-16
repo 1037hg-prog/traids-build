@@ -26,7 +26,7 @@ It is the **composer only**. It never decides a sleeve's rule, never registers a
 
 ## Checks (cloud, 2026-10-16)
 
-`node docs/proven-book-composer/2026-10-16/selftest.cjs` → `ALL 37 CASES PASSED`. The sizes in it are FIXTURE values, plainly not R353's. It covers:
+`node docs/proven-book-composer/2026-10-16/selftest.cjs` → `ALL 45 CASES PASSED`. The sizes in it are FIXTURE values, plainly not R353's. It covers:
 
 - R180's window (known answer, October 2026) and R180 via monthSessions.
 - Known plans: empty book, full-slot entries in priority order, whole shares, exits, ignored exits, unsettled proceeds.
@@ -36,6 +36,21 @@ It is the **composer only**. It never decides a sleeve's rule, never registers a
 - Refusals.
 - **3,000 seeded random nights**, checking: gross ≤ cap (or, with held dips alone over it, no buy), cash ≥ 0, dip buys at full slot, dip sells only their own exits, R180 within bounds and flat when not wanted, yields only on nights with a dip entry, the offer equal to idle room minus the reserve, and the same plan every time for the same input.
 - The CLI (written through `atomic-write.js`), and deploy / rollback / record.
+
+## Changes after checker cycle 1
+
+Cycle 1 result: 37/37 passed and 27 of 31 mutations were caught. No-margin, the cap and the dip protections held in about 390,000 checked plans. Its findings, all fixed:
+
+- **D1 (medium) — exact fits.** Money was compared in raw floating point, so an exact fit could read as one ulp short. A dip was then skipped, and R180 was sold and bought back in the same plan; the checker found this in about 3% of cent-exact boundary cases. All money comparisons now use a 1/100-cent tolerance. Two known-answer cases (the checker's own) fail on the old code and pass now.
+- **D2 — a missing intent block.** A missing R313 or R328 block is now refused; it used to be read as "no exits, no entries".
+- **D3 — wrong R180 instrument.** A held R180 position on another instrument is refused.
+- **D4 — `r180Want` input.** A date given twice, or a month list that is only "the sessions so far", is refused. The list must be the whole month from the calendar.
+- **D5 — bad entries.** A bare-string entry or a non-numeric rank is refused.
+- **D6 — untested ordering.** Entry priority, rank-before-alphabet and `stackerYields: false` now each have a known-answer case.
+- **D7 — temp folders.** The temp folder `aw.cjs` makes is removed.
+- **D8 (open question) — when the plan fills.** The plan assumes every order fills at `asOf`'s close (all the rules are close-to-close). **Confirm at home** that the proven book executes it at that close. If it runs a session later, every sleeve shifts by one session, R180's window included.
+
+No case was removed or weakened (37 → 45). The equivalent mutant M24 (`r180YieldsToDips` ignored while the Stacker covers the need) stays uncatchable by design.
 
 ## Missing from this clean copy (not reconstructed)
 

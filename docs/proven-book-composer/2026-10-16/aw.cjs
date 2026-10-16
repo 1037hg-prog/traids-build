@@ -10,7 +10,8 @@ function loadAtomicWrite(repo) {
   try { return { writeJsonAtomic: require(f).writeJsonAtomic, from: f, sha }; }
   catch (e) {
     const d = fs.mkdtempSync(path.join(os.tmpdir(), "aw-")); fs.copyFileSync(f, path.join(d, "atomic-write.js")); fs.writeFileSync(path.join(d, "package.json"), '{"type":"commonjs"}');
-    return { writeJsonAtomic: require(path.join(d, "atomic-write.js")).writeJsonAtomic, from: `${f} (via a commonjs temp copy: ${e.code || "require failed"})`, sha };
+    const w = require(path.join(d, "atomic-write.js")).writeJsonAtomic; fs.rmSync(d, { recursive: true, force: true });   // loaded: the temp copy is removed
+    return { writeJsonAtomic: w, from: `${f} (via a commonjs temp copy: ${e.code || "require failed"})`, sha };
   }
 }
 module.exports = { loadAtomicWrite };
