@@ -1,0 +1,16 @@
+[
+  {
+    "name": "fixture-effective-only",
+    "url": "https://example.invalid/fixtures/spdji-effective-only",
+    "file": "spdji-effective-only-no-dateline.txt",
+    "indexes": ["SP500", "SP400", "SP600"],
+    "note": "FICTIONAL: effective dates and nothing else. MUST produce no rows at all — the leak this collector exists to prevent"
+  },
+  {
+    "name": "fixture-misaligned",
+    "url": "https://example.invalid/fixtures/spdji-misaligned-2026-09-15",
+    "file": "spdji-misaligned-2026-09-15.txt",
+    "indexes": ["SP400", "SP600"],
+    "note": "FICTIONAL: two table rows misaligned on purpose. The two good rows are read, the two bad ones counted as unparsed-row"
+  }
+]

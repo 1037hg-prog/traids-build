@@ -1,0 +1,10 @@
+S&P Dow Jones Indices Announces Change to the Effective Date of an Index Change
+
+NEW YORK, September 10, 2026: S&P Dow Jones Indices announced today that the addition of Zeta Example
+Corp to the S&P 500, announced on September 4, 2026, will now take place effective prior to the open of
+trading on Tuesday, September 29, 2026. The pending acquisition of Lambda Example Industries is now
+expected to close on Monday, September 28, 2026.
+
+Effective Date  Index Name  Action    Company Name         Ticker  GICS Sector
+09/29/2026      S&P 500     Addition  Zeta Example Corp    ZETA    Information Technology
+09/29/2026      S&P 500     Deletion  Lambda Example Ind.  LMEX    Industrials

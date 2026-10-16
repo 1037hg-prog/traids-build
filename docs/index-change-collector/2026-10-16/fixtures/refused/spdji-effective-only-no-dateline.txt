@@ -1,0 +1,8 @@
+Index Changes
+
+Effective Date  Index Name        Action    Company Name        Ticker
+09/22/2026      S&P 500           Addition  Zeta Example Corp   ZETA
+10/07/2026      S&P 500           Addition  Gamma Example Inc   GAMM
+10/07/2026      S&P MidCap 400    Deletion  Gamma Example Inc   GAMM
+
+All changes are effective prior to the open of trading on the effective date shown.

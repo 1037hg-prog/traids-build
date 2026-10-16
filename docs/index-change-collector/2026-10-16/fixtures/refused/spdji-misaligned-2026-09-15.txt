@@ -1,0 +1,14 @@
+S&P Dow Jones Indices Announces Changes to the S&P MidCap 400 and S&P SmallCap 600 Indices
+
+NEW YORK, September 15, 2026: S&P Dow Jones Indices will make the following changes effective prior to
+the open of trading on Monday, September 28, 2026:
+
+Effective Date  Index Name        Action    Company Name            Ticker  GICS Sector
+09/28/2026      S&P MidCap 400    Addition  Sigma Example Group     SIGX    Energy
+09/28/2026      S&P MidCap 400    Deletion  Eta Example Partners LP ETAX    Energy
+09/28/2026      S&P SmallCap 600  Addition  Eta Example Partners LP ETAX    Energy
+09/28/2026      S&P SmallCap 600  Deletion  Tau Example Foods Inc.  TAUX    Consumer Staples
+
+The second and third rows above are MISALIGNED ON PURPOSE in this fixture: the company name is followed
+by a single space, so the row does not match its header. The collector counts both as unparsed-row and
+reads the rows above and below them. It never guesses where the column boundary was.

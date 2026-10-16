@@ -1,0 +1,26 @@
+S&P Dow Jones Indices Announces Changes to the S&P 500, S&P MidCap 400 and S&P SmallCap 600 Indices
+
+NEW YORK, September 4, 2026: S&P Dow Jones Indices ("S&P DJI") will make the following changes to the
+S&P 500, S&P MidCap 400 and S&P SmallCap 600 indices effective prior to the open of trading on Tuesday,
+September 22, 2026:
+
+Effective Date  Index Name          Action    Company Name            Ticker  GICS Sector
+09/22/2026      S&P 500             Addition  Zeta Example Corp       ZETA    Information Technology
+09/22/2026      S&P 500             Deletion  Lambda Example Ind.     LMEX    Industrials
+09/22/2026      S&P 500             Deletion  Omicron Example Co      OMIC    Industrials
+09/22/2026      S&P MidCap 400      Addition  Omicron Example Co      OMIC    Industrials
+09/22/2026      S&P MidCap 400      Deletion  Kappa Example Holdings  KAPX    Health Care
+09/22/2026      S&P SmallCap 600    Addition  Kappa Example Holdings  KAPX    Health Care
+09/22/2026      S&P 500 ESG Index   Addition  Theta Example Inc       THET    Utilities
+09/22/2026      S&P Composite 1500  Addition  Zeta Example Corp       ZETA    Information Technology
+
+Zeta Example Corp (NYSE: ZETA) will replace Lambda Example Industries (NYSE: LMEX) in the S&P 500
+effective prior to the open of trading on Tuesday, September 22, 2026. Lambda Example Industries is
+being acquired by a private investor group in a transaction expected to close on or about September 18,
+2026. Omicron Example Co and Kappa Example Holdings are each moving down one index, and are more
+representative of the mid-cap and small-cap market spaces respectively.
+
+Company                Ticker  GICS Sector
+Lambda Example Ind.    LMEX    Industrials
+
+For more information about S&P Dow Jones Indices, please visit the index announcements page.

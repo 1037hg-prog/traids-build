@@ -1,0 +1,15 @@
+Nasdaq-100 Index Constituent Change
+
+Announcement Date: February 2, 2026
+
+Nu Example Logistics Inc. (Nasdaq: NUEX) will replace Psi Example Media Group (Nasdaq: PSIM) in the
+Nasdaq-100 Index effective prior to market open on Friday, February 6, 2026. Psi Example Media Group is
+being acquired by Tau Example Group and will no longer be eligible for the index.
+
+A further change has been determined and is announced today; its effective date depends on a regulatory
+approval that has not yet been granted.
+
+The following securities will be removed from the Nasdaq-100 Index effective on a date to be announced:
+
+Company Name                   Ticker
+Phi Example Semiconductors     PHIX

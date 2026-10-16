@@ -1,0 +1,22 @@
+Annual Reconstitution of the Nasdaq-100 Index
+
+NEW YORK, Dec. 12, 2025 -- Nasdaq today announced the results of the annual reconstitution of the
+Nasdaq-100 Index, which will become effective prior to market open on Monday, December 22, 2025.
+
+The following securities will be added to the Nasdaq-100 Index:
+
+Company Name                     Ticker
+Alpha Example Holdings Inc.      ALEX
+Upsilon Example Software Ltd.    UPSX
+Chi Example Biosciences Inc.     CHIX
+
+The following securities will be removed from the Nasdaq-100 Index:
+
+Company Name                     Ticker
+Beta Example Industries Inc.     BEXI
+Rho Example Resources Corp.      RHOX
+Nu Example Logistics Inc.        NUEX
+
+The Nasdaq-100 Index is composed of 100 of the largest non-financial companies listed on The Nasdaq
+Stock Market based on market capitalisation. The annual reconstitution is based on market values as of
+the last trading day in November.

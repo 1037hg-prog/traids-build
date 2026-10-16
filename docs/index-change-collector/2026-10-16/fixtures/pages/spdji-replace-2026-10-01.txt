@@ -1,0 +1,17 @@
+Gamma Example Inc to Join the S&P 500
+
+NEW YORK, October 1, 2026, 5:15 PM ET: Gamma Example Inc. (NYSE: GAMM) will replace Delta Example Corp.
+(Nasdaq: DELT) in the S&P 500 effective prior to the opening of trading on Wednesday, October 7, 2026.
+S&P MidCap 400 constituent Gamma Example Inc. is more representative of the large-cap market space.
+Delta Example Corp. is being acquired by Sigma Example Partners in a deal expected to be completed on
+Tuesday, October 6, 2026.
+
+Following is a summary of the changes:
+
+Effective Date  Index Name      Action    Company Name         Ticker  GICS Sector
+10/07/2026      S&P 500         Addition  Gamma Example Inc.   GAMM    Financials
+10/07/2026      S&P 500         Deletion  Delta Example Corp.  DELT    Financials
+10/07/2026      S&P MidCap 400  Deletion  Gamma Example Inc.   GAMM    Financials
+
+Iota Example Technologies (Nasdaq: IOTX) will be added to the S&P MidCap 400 effective prior to the
+opening of trading on Wednesday, October 7, 2026, replacing Gamma Example Inc. in that index.

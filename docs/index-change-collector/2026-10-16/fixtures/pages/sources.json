@@ -1,0 +1,44 @@
+[
+  {
+    "name": "fixture-spdji-table",
+    "url": "https://example.invalid/fixtures/spdji-table-2026-09-04",
+    "file": "spdji-table-2026-09-04.txt",
+    "indexes": ["SP500", "SP400", "SP600"],
+    "note": "FICTIONAL S&P DJI press release: a self-describing table, a replace sentence saying the same thing, and two indices this collector does not take"
+  },
+  {
+    "name": "fixture-spdji-replace",
+    "url": "https://example.invalid/fixtures/spdji-replace-2026-10-01",
+    "file": "spdji-replace-2026-10-01.txt",
+    "indexes": ["SP500", "SP400", "SP600"],
+    "note": "FICTIONAL: a dateline carrying a clock time, a replace sentence, a table, and a one-sided sentence"
+  },
+  {
+    "name": "fixture-spdji-postponed",
+    "url": "https://example.invalid/fixtures/spdji-postponed-2026-09-10",
+    "file": "spdji-postponed-2026-09-10.txt",
+    "indexes": ["SP500", "SP400", "SP600"],
+    "note": "FICTIONAL: the effective date of the September 4 announcement is moved. The page also says 'announced on September 4, 2026', which must NOT be read as this page's date"
+  },
+  {
+    "name": "fixture-spdji-smallcap-html",
+    "url": "https://example.invalid/fixtures/spdji-smallcap-2026-08-03",
+    "file": "spdji-smallcap-2026-08-03.html",
+    "indexes": ["SP600"],
+    "note": "FICTIONAL, as HTML: exercises the html-to-text step, including the table cell boundary and a script tag holding a date"
+  },
+  {
+    "name": "fixture-nasdaq-recon",
+    "url": "https://example.invalid/fixtures/nasdaq-100-recon-2025-12-12",
+    "file": "nasdaq-100-recon-2025-12-12.txt",
+    "indexes": ["NDX100"],
+    "note": "FICTIONAL Nasdaq-100 annual reconstitution: two sections, three names each, the one effective date stated in the prose"
+  },
+  {
+    "name": "fixture-nasdaq-interim",
+    "url": "https://example.invalid/fixtures/nasdaq-100-interim-2026-02-02",
+    "file": "nasdaq-100-interim-2026-02-02.txt",
+    "indexes": ["NDX100"],
+    "note": "FICTIONAL: a labelled Announcement Date, a replace sentence, and a section whose effective date is to be announced"
+  }
+]
