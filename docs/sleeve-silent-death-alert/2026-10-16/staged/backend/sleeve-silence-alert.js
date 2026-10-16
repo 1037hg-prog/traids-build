@@ -122,11 +122,14 @@ function checkSleeve(sl, { dataDir, nowMs, holidays }) {
       decided = (s) => !!last && s <= last;
       if (!start && last) start = last;
     } else if (sl.kind === "marks") {
-      // the run date: the ET date of the state's own save time (asOf, written by every live save), else from the marks
+      // the run date from the marks (d + 1 for a normal mark, markedOn for a catch-up), capped by the ET date of the state's save time
+      // (asOf, written by every live save)
       const asOf = Date.parse(st.asOf || ""), asOfEt = Number.isFinite(asOf) ? past(etNow(asOf).date) : null;
       const marks = Array.isArray(st.marks) ? st.marks.filter((m) => isObj(m) && isYmd(m.d)) : [];
       const fromMarks = marks.map((m) => (m.catchUp || m.carriedFrom ? ymdOf(m.markedOn) : addDays(m.d, 1))).map(past).filter(Boolean).sort().pop() || null;
-      last = asOfEt || fromMarks;
+      // a run counts only if it saved AND marked: the earlier of the two dates (a late run's candle date and a crashed run's save
+      // date both over-state the run on their own); no marks at all is no run
+      last = fromMarks ? (asOfEt && asOfEt < fromMarks ? asOfEt : fromMarks) : null;
       decided = (s) => !!last && last >= s;
       if (!start && (last || marks.length)) start = last || marks.map((m) => m.d).sort()[0];
     }
@@ -209,7 +212,7 @@ function save(file, obj) {   // JSON only through lib/atomic-write.js
   require("./lib/atomic-write.js").writeJsonAtomic(file, obj); }
 
 function parseArgs(argv) {
-  const o = { dry: false, nowMs: Date.now() };
+  const o = { dry: false, nowMs: Date.now() };   // run() options
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dry") o.dry = true;
@@ -219,16 +222,21 @@ function parseArgs(argv) {
   return o;
 }
 
-if (require.main === module) {
-  const o = parseArgs(process.argv.slice(2));
-  if (o.error) { console.error(`${o.error}\nusage: sleeve-silence-alert.js [--dry] [--now ISO]`); process.exit(2); }
-  run(o).then((r) => process.exit(r.exit), async (e) => {
-    // the check itself died: say so through notify.js (unless --dry); exit 3 if that was delivered, else 4 (nobody was told)
-    console.error("sleeve-silence: failed: " + (e && e.stack || e));
-    if (o.dry) process.exit(4);
-    let told = false; try { told = !!(await require("./notify.js").notify("TRAIDS — sleeve-silence check FAILED", `The sleeve silent-death check could not run: ${String(e && e.message).slice(0, 300)}. Sleeves are unwatched until it is fixed.`, { priority: "high", tags: "warning", email: false })); } catch { told = false; }
-    process.exit(told ? 3 : 4);
-  });
+/** main(argv, { runImpl, notify, log }) -> exit code. The command line; the selftest calls it with fakes. */
+async function main(argv, { runImpl = run, notify = null, log = console.log, logErr = console.error } = {}) {
+  const o = parseArgs(argv);
+  if (o.error) { logErr(`${o.error}\nusage: sleeve-silence-alert.js [--dry] [--now ISO]`); return 2; }
+  try { return (await runImpl({ ...o, notify, log })).exit; }
+  catch (e) {
+    // the check itself died: say so through notify.js (unless --dry); 3 if that was delivered, else 4 (nobody was told)
+    logErr("sleeve-silence: failed: " + (e && e.stack || e));
+    if (o.dry) return 4;
+    let told = false;
+    try { const n = notify || require("./notify.js").notify; told = !!(await n("TRAIDS — sleeve-silence check FAILED", `The sleeve silent-death check could not run: ${String(e && e.message).slice(0, 300)}. Sleeves are unwatched until it is fixed.`, { priority: "high", tags: "warning", email: false })); } catch { told = false; }
+    return told ? 3 : 4;
+  }
 }
 
-module.exports = { SLEEVES, LOOKBACK_SESSIONS, dueSessions, checkSleeve, checkSleeveSafe, run, parseArgs, etNow, isSession };
+if (require.main === module) main(process.argv.slice(2)).then((c) => process.exit(c), () => process.exit(4));
+
+module.exports = { SLEEVES, LOOKBACK_SESSIONS, dueSessions, checkSleeve, checkSleeveSafe, run, main, parseArgs, etNow, isSession };

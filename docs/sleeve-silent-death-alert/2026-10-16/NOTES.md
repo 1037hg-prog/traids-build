@@ -19,7 +19,7 @@ This script sits outside every sleeve. It:
 | `staged/backend/sleeve-silence-alert.js` | **new** script. Run it as `node backend/sleeve-silence-alert.js [--dry] [--now ISO]`. |
 | `base/backend/sleeve-silence-alert.js.absent` | marker that the file is new; rollback removes it |
 | `deploy.cjs --plan / --apply`, `rollback.cjs --plan / --rollback` | refuse on drift; refuse on trading weekdays 05:30–16:00 MT |
-| `selftest.cjs` | 71 checks: fake clock, fake state files and ledgers, fake notify. Ends `SELFTEST PASSED (71 checks)`. |
+| `selftest.cjs` | 81 checks: fake clock, fake state files and ledgers, fake notify. Ends `SELFTEST PASSED (81 checks)`. |
 
 There is no `record.cjs`. The script writes no registry row, changes no registered test and mints no test id. Its only output file is its own dedupe state, `backend/data/sleeve-silence-alert.json`, written through `lib/atomic-write.js`.
 
@@ -35,7 +35,7 @@ There is no `record.cjs`. The script writes no registry row, changes no register
 | R316 | days | the same, in `r316-state.json` / `r316-ledger.jsonl` (`r316-ibs-forward.js:585-592`) | 16:30 | `r316-OFF` still decides |
 | R151 | lastRun | `r151-state.json` `lastRun.closeArm` / `afterClose` / `preOpen` ≥ S, each step checked separately (`r151-rsi2-forward.js:165,185,206`) | 16:30 / 17:30 / 10:00 | `r151-OFF` stops the runner → paused |
 | R186, R218, R219 | lastRun | `lastRun.closeArm` ≥ S. It is written every session, including sessions with nothing due. | 16:30 | still writes lastRun |
-| R191, R231 | marks | the ET date of the state's `asOf` ≥ S. Every live save stamps `asOf` (r191:24, r231:34). A run after 00:00 UTC marks a candle `d` equal to S itself, so the date of the candle cannot be trusted. Without `asOf`, it falls back to: a mark with `d` ≥ S−1 that is not a catch-up mark, or a catch-up mark with `markedOn` ≥ S. | 21:00 | marks continue under the switch |
+| R191, R231 | marks | The run date taken from the marks must be ≥ S: `d`+1 for a normal mark, `markedOn` for a catch-up mark. It is **capped** by the ET date of the state's `asOf`, which every live save stamps (r191:24, r231:34). A run counts only if it both saved and marked. A late run after 00:00 UTC over-states its candle date, and a run that crashed after a mid-run save over-states its save date; taking the earlier of the two dates handles both. A save with no marks is not a run. | 21:00 | marks continue under the switch |
 
 **Not expected to decide, so no alert:**
 
@@ -64,7 +64,7 @@ R151's `closeArm` and `preOpen` are written only by `--live` runs (`r151-rsi2-fo
 Exit codes:
 
 - 0: nothing missed
-- 3: something missed and the operator was told (now or earlier)
+- 3: something missed and the operator was told (now or earlier), or the check itself died and its "check FAILED" alert was delivered
 - 4: something missed and **nobody was told**, or the check itself died and its failure alert was not delivered
 - 2: bad arguments
 
@@ -99,16 +99,17 @@ The root `package.json` is `"type": "module"`, and this copy has no `backend/pac
 
 ## Test edits (AGENTS.md: every test edit, with its reason)
 
-The checker's first cycle found that a sleeve with no record at all was silent ("not-started") for 7 of 8 sleeves. That silence path is the exact failure this task exists to catch, so the rule changed and three tests changed with it:
+The checker's first cycle found that a sleeve with no record at all was silent ("not-started") for 7 of 8 sleeves. That silence path is the exact failure this task exists to catch, so the rule changed and these tests changed with it:
 
 - "no record and no expectFrom: not-started, no alert" became "no record and no expectFrom: the latest due session is owed". A new test, "no record and expectFrom still in the future: not-started, no alert", keeps the legitimate not-started case.
 - "a lastRun that was never written and no expectFrom: not-started" became "a lastRun that was never written: the latest due session is owed".
 - "the only alert path is backend/notify.js" now checks that every `require()` in the script is fs, path, notify.js, run-window.js or atomic-write.js. The script now requires notify.js in two places: the alert itself and the "check FAILED" alert on the crash path. The old check counted exactly one `require("./notify.js")`.
-- "the live repo has no alert script yet" became "base or applied, never drifted". The old check would fail after a correct `--apply`.
+- Before the first checker cycle, "the live repo has no alert script yet" became "base or applied, never drifted". The old check would fail after a correct `--apply`.
+- In cycle 3, "marks: a Friday-evening save covers Friday" became "…with Friday's mark covers Friday". The same fixture now sits beside new cases where a save without a new mark does not count.
 
-No test was removed. Seventeen were added, for the checker's other findings: crash paths, array and null states, a corrupt alert state, future dates, two steps missed on one session, a dry run on the healthy path, `firstLiveDecision` bounds, `email:false`, and the late-run `asOf` case.
+No test was removed. Every other change added tests, for the checker's findings: crash paths, the command-line failure path (`main()` with fakes), array and null states, a corrupt alert state, future dates, `expectFrom` today, two steps missed on one session, a dry run on the healthy path, `firstLiveDecision` bounds, `email:false`, the late-run `asOf` case, and a crashed run whose save carried no new mark.
 
 ## Checks run here
 
-- `node docs/sleeve-silent-death-alert/2026-10-16/selftest.cjs` → `SELFTEST PASSED (71 checks)`
+- `node docs/sleeve-silent-death-alert/2026-10-16/selftest.cjs` → `SELFTEST PASSED (81 checks)`
 - `node --check` on every file; `deploy.cjs --plan` reads `base` (new file)

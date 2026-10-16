@@ -98,6 +98,8 @@ const quiet = () => {};
     ok("no record and no expectFrom: the latest due session is owed (a sleeve that never started is an alert)", r.status === "missed" && r.missed.length === 1 && r.missed[0].session === "2026-10-16");
     r = (await A.run({ root, nowMs: now, dry: true, log: quiet, sleeves: [{ ...r316[0], expectFrom: "2026-10-20" }] })).results[0];
     ok("no record and expectFrom still in the future: not-started, no alert", r.status === "not-started" && r.missed.length === 0);
+    r = (await A.run({ root, nowMs: now, dry: true, log: quiet, sleeves: [{ ...r316[0], expectFrom: "2026-10-16" }] })).results[0];
+    ok("expectFrom today: today's due session is owed", r.status === "missed" && r.missed.map((m) => m.session).join() === "2026-10-16");
     fs.writeFileSync(path.join(root, "backend", "data", "r316-state.json"), "{ torn");
     r = (await A.run({ root, nowMs: now, dry: true, log: quiet, sleeves: r316 })).results[0];
     ok("a state file that exists but cannot be read is an alert", r.status === "missed" && /unreadable/.test(r.note));
@@ -246,7 +248,28 @@ const quiet = () => {};
     const r = (await A.run({ root, nowMs: ET("2026-10-16T21:30:00"), dry: true, log: quiet, sleeves: r191 })).results[0];
     ok("marks: the run date is asOf's ET date — a late Thursday run does not cover Friday", r.status === "missed" && r.missed.map((m) => m.session).join() === "2026-10-16", JSON.stringify(r));
     put("r191-crypto-trend.json", { asOf: "2026-10-16T22:40:00.000Z", marks: [{ coin: "BTC", d: "2026-10-15", close: 1 }] });
-    ok("marks: a Friday-evening save covers Friday", (await A.run({ root, nowMs: ET("2026-10-16T21:30:00"), dry: true, log: quiet, sleeves: r191 })).results[0].status === "ok");
+    put("r191-crypto-trend.json", { asOf: "2026-10-16T22:40:00.000Z", marks: [{ coin: "BTC", d: "2026-10-15", close: 1 }] });
+    ok("marks: a Friday-evening save with Friday's mark covers Friday", (await A.run({ root, nowMs: ET("2026-10-16T21:30:00"), dry: true, log: quiet, sleeves: r191 })).results[0].status === "ok");
+    put("r191-crypto-trend.json", { asOf: "2026-10-16T21:00:00.000Z", marks: [{ coin: "BTC", d: "2026-10-12", close: 1 }] });
+    ok("marks: a Friday save with no new mark (a run that crashed after a mid-run save) is not a run", (await A.run({ root, nowMs: ET("2026-10-16T21:30:00"), dry: true, log: quiet, sleeves: r191 })).results[0].missed.map((m) => m.session).join() === "2026-10-14,2026-10-15,2026-10-16");
+    put("r191-crypto-trend.json", { asOf: "2026-10-16T21:00:00.000Z", coins: {} });
+    ok("marks: a save with no marks at all is not a run", (await A.run({ root, nowMs: ET("2026-10-16T21:30:00"), dry: true, log: quiet, sleeves: r191 })).results[0].status === "missed");
+    put("r191-crypto-trend.json", { marks: [{ coin: "BTC", d: "2026-10-12", close: 1, catchUp: true, markedOn: "2099-01-01" }] });
+    ok("marks without asOf: a future markedOn is ignored", (await A.run({ root, nowMs: ET("2026-10-16T21:30:00"), dry: true, log: quiet, sleeves: r191 })).results[0].status === "missed");
+  }
+
+  // ---- 7c. the command line, with fakes: a run that dies still tells someone, or exits 4 --------------------------------------
+  {
+    const { A } = makeRoot(), boom = async () => { throw new Error("run-window.js missing"); }, errs = [];
+    const nfOk = fakeNotify(true), c1 = await A.main([], { runImpl: boom, notify: nfOk, log: quiet, logErr: (x) => errs.push(x) });
+    ok("main: the run dies, the FAILED alert is delivered -> exit 3", c1 === 3 && nfOk.sent.length === 1 && /check FAILED/.test(nfOk.sent[0].t) && /run-window\.js missing/.test(nfOk.sent[0].b) && nfOk.sent[0].o.priority === "high");
+    ok("main: the run dies, notify returns false -> exit 4", (await A.main([], { runImpl: boom, notify: fakeNotify(false), log: quiet, logErr: quiet })) === 4);
+    ok("main: the run dies, notify throws -> exit 4", (await A.main([], { runImpl: boom, notify: fakeNotify(new Error("down")), log: quiet, logErr: quiet })) === 4);
+    const nfDry = fakeNotify(true);
+    ok("main --dry: the run dies -> exit 4 and nothing is sent", (await A.main(["--dry"], { runImpl: boom, notify: nfDry, log: quiet, logErr: quiet })) === 4 && nfDry.sent.length === 0);
+    ok("main: a bad argument -> exit 2", (await A.main(["--send"], { runImpl: boom, log: quiet, logErr: quiet })) === 2);
+    let seen = null; const c5 = await A.main(["--dry", "--now", "2026-10-14T21:00:00Z"], { runImpl: async (o) => { seen = o; return { exit: 0 }; }, log: quiet, logErr: quiet });
+    ok("main: passes --dry and --now to run and returns its exit", c5 === 0 && seen.dry === true && seen.nowMs === Date.parse("2026-10-14T21:00:00Z"));
   }
 
   // ---- 8. the CLI and the package ----------------------------------------------------------------------------------------
