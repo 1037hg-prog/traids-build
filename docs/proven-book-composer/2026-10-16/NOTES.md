@@ -115,6 +115,34 @@ Test edits, with reasons:
 
 No case was removed (67 → 75).
 
+## Checker cycle 5 (the last allowed): no must-fix findings
+
+The cycle 5 check found no regressions and nothing that must be fixed before apply:
+
+- 75/75 passed, and all 67 earlier case titles are unchanged. The declared `wantNext: false` edit was shown not to change what any fixture tests: the old composer still passes all 67 old cases.
+- 0 differences from the exact-arithmetic reference over about 295,000 nights.
+- 0 cap or margin breaches and 0 spends of unsettled cash in the month-long simulations.
+- 68 of 78 mutants killed. The survivors are equivalent or known gaps.
+- Trimming R180's excess first never bought fewer dips or left R180 lower with the default flags.
+
+The remaining low items, accepted and documented here:
+
+- **L-A — header line:** the nightly format line now shows `wantNext`. This was a documentation-only edit made after cycle 5, with no logic change.
+- **L-B — the whole-share case can't tell the difference:** the "whole-share need" case uses BIL at $100, so it cannot tell a $49,955 need from $50,000 (mutant S11 survives). Accepted.
+- **L-C — `stackerYields: false` on an over-cap night:** R180's excess is trimmed before the Stacker. A dip can then be skipped that the previous version bought: 96 per 100,000 random nights, only with that non-default flag. This is consistent with the flag.
+- **L-D — inputs not cross-checked:**
+  - `wantNext` beside `monthSessions` is ignored.
+  - `want` beside `monthSessions` overrides the calendar.
+  - A wrong hand-given `wantNext` cannot be detected.
+  - **Recommendation: feed the month calendar, not `want`/`wantNext`.**
+- **L-E — refusal with R180 disabled:** a missing IEF price is refused even when R180's target is 0. It fails closed, so keep IEF in the nightly prices.
+- **L-F — one-share leftovers:** whole-share yields can leave about one BIL share offered back after a Stacker sale (about 7 per 5,040 nights at cap 0.8).
+- **Carried from earlier cycles:**
+  - L5: overnight IEF moves can leave R180 1–5 shares short.
+  - D8: confirm at home that the plan fills at `asOf`'s close.
+  - The M22 test gap.
+  - Cash-account crowd-out beyond `reserveUsd`, measured above.
+
 ## Missing from this clean copy (not reconstructed)
 
 - **`backend/proven-book/`** (the whole folder). The proven book's own files, its input formats, and how it is run nightly are unknown here. The composer therefore takes an explicit input (`proven-book-nightly-v1`) and config (`proven-book-composer-v1`). **At home:** map the proven book's nightly outputs (each sleeve's exits and entries, the positions, cash and closes) onto that input, or adapt the reader.

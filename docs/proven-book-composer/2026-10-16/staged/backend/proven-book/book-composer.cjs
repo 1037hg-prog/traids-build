@@ -35,7 +35,7 @@
  * TIMING: every order of the plan is meant to fill at asOf's CLOSE (the dip rules and R180 are close-to-close). If the proven book executes
  * the plan later (the next session), each sleeve shifts by a session — confirm at home before use.
  * nightly.json (proven-book-nightly-v1): { asOf: "YYYY-MM-DD", cash, positions: [{ sleeve, sym, qty, price }], prices: { SYM: last close },
- *   intents: { R313: { exits: [sym], entries: [{ sym, rank }] }, R328: {...}, R180: { want: true|false } | { monthSessions: [dates], closedWeekdays: [dates] } } }
+ *   intents: { R313: { exits: [sym], entries: [{ sym, rank }] }, R328: {...}, R180: { want: true|false, wantNext: true|false (required in a cash account) } | { monthSessions: [dates], closedWeekdays: [dates] } } }
  */
 "use strict";
 const fs = require("fs"), path = require("path");
