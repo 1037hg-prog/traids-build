@@ -1,0 +1,25 @@
+base/ holds no bytes, deliberately.
+
+A staged package keeps in base/ a byte-exact copy of each LIVE file the change starts from, so that deploy.cjs can refuse on drift
+and rollback.cjs can put the original back. This package changes no live file: all six paths it ships are NEW
+
+    backend/lib/sec-fetch.js
+    backend/lib/form4-parse.js
+    backend/lib/insider-buys-lib.js
+    backend/lib/insider-cluster-lib.js
+    backend/insider-buys-collect.js
+    backend/insider-clusters.js
+
+so there is nothing to copy. deploy.cjs says the same thing in machine-readable form: every entry in FILES carries baseSha: null,
+which means "not at home yet". The three states it reads are therefore:
+
+    absent   nothing at that path          -> --apply creates it
+    applied  that path holds the staged bytes -> --apply does nothing; rollback REMOVES it
+    DRIFT    that path exists holding OTHER bytes -> both refuse, and the file is never removed
+
+"Back to base" for this package means the six files are not there. rollback.cjs --apply removes exactly those six, and nothing else:
+it does not touch the dated files the collector already wrote (backend/data/insider-buys/insider-buys-<day>.jsonl, and
+backend/data/insider-clusters-<day>.json), because those are a record of what the SEC published and removing the reader is no reason
+to destroy the record.
+
+selftest.cjs check A2 holds every FILES entry to baseSha: null, so this folder cannot quietly stop being empty.

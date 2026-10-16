@@ -1,0 +1,67 @@
+<SEC-DOCUMENT>0009000001-26-000003.txt : 20261117
+<SEC-HEADER>0009000001-26-000003.hdr.sgml : 20261117
+ACCESSION NUMBER:		0009000001-26-000003
+CONFORMED SUBMISSION TYPE:	4
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20261116
+FILED AS OF DATE:		20261117
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>4
+<SEQUENCE>1
+<FILENAME>form4.xml
+<DESCRIPTION>FORM 4
+<TEXT>
+<XML>
+<?xml version="1.0"?>
+<ownershipDocument>
+    <schemaVersion>X0508</schemaVersion>
+    <documentType>4</documentType>
+    <periodOfReport>2026-11-16</periodOfReport>
+    <issuer>
+        <issuerCik>0001000002</issuerCik>
+        <issuerName>FIXTURE BRAVO INC</issuerName>
+        <issuerTradingSymbol>BBBB</issuerTradingSymbol>
+    </issuer>
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0002000003</rptOwnerCik>
+            <rptOwnerName>FIXTURE OWNER THREE</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerRelationship>
+            <isDirector>0</isDirector>
+            <isOfficer>0</isOfficer>
+            <isTenPercentOwner>1</isTenPercentOwner>
+            <isOther>0</isOther>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <securityTitle><value>COMMON STOCK</value></securityTitle>
+            <transactionDate><value>2026-11-16</value></transactionDate>
+            <transactionCoding>
+                <transactionFormType>4</transactionFormType>
+                <transactionCode>P</transactionCode>
+                <equitySwapInvolved>0</equitySwapInvolved>
+            </transactionCoding>
+            <transactionAmounts>
+                <transactionShares><value>2000</value></transactionShares>
+                <transactionPricePerShare><value>5.00</value></transactionPricePerShare>
+                <transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction><value>10000</value></sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+            <ownershipNature><directOrIndirectOwnership><value>D</value></directOrIndirectOwnership></ownershipNature>
+        </nonDerivativeTransaction>
+    </nonDerivativeTable>
+    <footnotes><footnote id="F1">No price is reported for this transaction.</footnote></footnotes>
+    <ownerSignature>
+        <signatureName>FIXTURE SIGNATURE</signatureName>
+        <signatureDate>2026-11-17</signatureDate>
+    </ownerSignature>
+</ownershipDocument>
+</XML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
