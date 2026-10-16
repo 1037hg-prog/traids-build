@@ -1,0 +1,52 @@
+[
+ {
+  "cik": "0000000001",
+  "symbol": "ZZZZ",
+  "companyName": "SAMPLE WIDGETS INC",
+  "form": "10-K",
+  "filingDate": "2024-02-20",
+  "reportDate": "2023-12-31",
+  "accession": "0000000001-24-000002",
+  "file": "zzzz-10k-2024.txt"
+ },
+ {
+  "cik": "0000000001",
+  "symbol": "ZZZZ",
+  "companyName": "SAMPLE WIDGETS INC",
+  "form": "10-Q",
+  "filingDate": "2024-05-07",
+  "reportDate": "2024-03-31",
+  "accession": "0000000001-24-000006",
+  "file": "zzzz-10q-2024q1.txt"
+ },
+ {
+  "cik": "0000000001",
+  "symbol": "ZZZZ",
+  "companyName": "SAMPLE WIDGETS INC",
+  "form": "10-K",
+  "filingDate": "2025-02-18",
+  "reportDate": "2024-12-31",
+  "accession": "0000000001-25-000003",
+  "file": "zzzz-10k-2025.txt"
+ },
+ {
+  "cik": "0000000001",
+  "symbol": "ZZZZ",
+  "companyName": "SAMPLE WIDGETS INC",
+  "form": "10-Q",
+  "filingDate": "2025-05-06",
+  "reportDate": "2025-03-31",
+  "accession": "0000000001-25-000009",
+  "file": "zzzz-10q-2025q1.txt"
+ },
+ {
+  "cik": "0000000002",
+  "symbol": "YYYY",
+  "companyName": "SAMPLE GADGETS CORP",
+  "form": "10-K",
+  "filingDate": "2025-03-14",
+  "reportDate": "2024-12-31",
+  "accession": "0000000002-25-000004",
+  "file": "yyyy-10k-2025.htm"
+ }
+]

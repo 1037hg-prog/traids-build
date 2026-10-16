@@ -1,0 +1,79 @@
+SAMPLE WIDGETS INC
+FORM 10-K
+ANNUAL REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934
+For the fiscal year ended December 31, 2024
+Commission file number 000-00001
+
+TABLE OF CONTENTS
+
+PART I
+Item 1. Business                                              3
+Item 1A. Risk Factors                                         7
+Item 1B. Unresolved Staff Comments                           12
+Item 3. Legal Proceedings                                    13
+PART II
+Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations    15
+Item 7A. Quantitative and Qualitative Disclosures About Market Risk                              21
+SIGNATURES                                                   22
+
+PART I
+
+Item 1. Business
+
+Sample Widgets Inc designs, assembles and sells widgets. We were organised under the laws of a
+state of the United States and we have sold widgets continuously since the company was formed.
+Our widgets are sold to distributors, to industrial buyers and, in smaller numbers, directly to
+the people who use them. We operate one assembly plant and three regional warehouses.
+
+Our customers are concentrated in the industrial sector. No single customer accounted for more
+than ten per cent of our revenue in the year covered by this report.
+
+Item 1A. Risk Factors
+
+Our business depends on the continued demand for widgets. If buyers move to a different product,
+or if a competitor sells a widget that is cheaper or better than ours, our revenue would fall and
+we might not be able to reduce our costs quickly enough to keep the business profitable.
+
+We buy the alloy our widgets are made from under contracts that run for one year. A sharp rise in
+the price of that alloy, or the loss of a supplier, would raise our costs. We do not hedge the
+price of the alloy and we have no long term supply agreement in place.
+
+Our assembly plant is a single site. A fire, a flood or a long interruption of power at that site
+would stop production until the plant could be repaired or production moved elsewhere.
+
+We now depend on one contract manufacturer in a single foreign country for the housings used in
+every widget we assemble. If that manufacturer stopped work, or if the goods it ships to us were
+delayed at a border or made more expensive by a tariff, we would not be able to assemble widgets
+at our present rate and our revenue would fall until another source could be qualified.
+
+Item 1B. Unresolved Staff Comments
+
+beta gamma gamma delta
+
+Item 3. Legal Proceedings
+
+There are no material pending legal proceedings against the company or any of its subsidiaries,
+and no such proceeding is known by us to be contemplated by a governmental authority.
+
+PART II
+
+Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations
+
+Demand fell sharply during the period. Every regional market shrank, several distributors cancelled
+standing orders, and the average selling price of a widget declined as competitors discounted. Gross
+margin narrowed because fixed assembly costs were spread over fewer units.
+
+We drew on the revolving facility twice during the period and ended with borrowings outstanding. We
+have reduced planned capital spending and suspended hiring. Whether operations will fund the coming
+period depends on demand recovering, which we cannot promise.
+
+Item 7A. Quantitative and Qualitative Disclosures About Market Risk
+
+We are exposed to changes in the price of the alloy used in our widgets and, through the contract
+manufacturer described above, to movements in one foreign currency. We hold no derivative
+instruments of any kind.
+
+SIGNATURES
+
+Pursuant to the requirements of the Securities Exchange Act of 1934, the registrant has duly caused
+this report to be signed on its behalf by the undersigned, thereunto duly authorised.

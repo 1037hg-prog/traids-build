@@ -1,0 +1,45 @@
+SAMPLE WIDGETS INC
+FORM 10-Q
+QUARTERLY REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934
+For the quarterly period ended March 31, 2024
+Commission file number 000-00001
+
+PART I - FINANCIAL INFORMATION
+
+Item 1. Financial Statements
+
+The unaudited condensed financial statements of the company for the quarter are set out on the
+pages that follow, together with the notes that form part of them. In the opinion of management
+they include every adjustment necessary for a fair statement of the periods presented.
+
+Item 2. Management's Discussion and Analysis of Financial Condition and Results of Operations
+
+Revenue for the quarter rose on stronger widget demand in every region that we serve. Unit volume
+rose and the average selling price was unchanged from the same quarter of the prior year. Operating
+expenses were flat. We held no borrowings at the end of the quarter.
+
+Item 4. Controls and Procedures
+
+Our disclosure controls and procedures were effective as of the end of the period covered by this
+report. There was no change in internal control over financial reporting during the quarter that
+materially affected, or is reasonably likely to materially affect, that control.
+
+PART II - OTHER INFORMATION
+
+Item 1. Legal Proceedings
+
+There are no material pending legal proceedings against the company or any of its subsidiaries.
+
+Item 1A. Risk Factors
+
+alpha beta beta gamma
+
+Item 6. Exhibits
+
+The exhibits required by this item are listed in the exhibit index that follows the signature page
+of this report and are incorporated here by reference.
+
+SIGNATURES
+
+Pursuant to the requirements of the Securities Exchange Act of 1934, the registrant has duly caused
+this report to be signed on its behalf by the undersigned, thereunto duly authorised.
