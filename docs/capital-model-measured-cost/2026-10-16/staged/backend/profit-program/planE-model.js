@@ -189,6 +189,11 @@ PYW.D = Object.fromEntries(Object.entries(PYW.E).map(([k, v]) => [k, +(1.2 * v).
  *   znBpsPerRoundTrip       the real-ZN month-end windows arrive with their cost ALREADY SUBTRACTED from tre (futures-month-end.js takes
  *                           0.0004 off each window, and znWindows() does the same for the month it builds itself): 4 bps PER ROUND TRIP
  *                           of the note position, which is why a measured ZN cost is applied by repriceZnRows below and not by an opt.
+ *                           futures-month-end.js ALSO takes 0.0002 off per roll-guard day in the window (tre = exp(sum) - 1 - 0.0004 -
+ *                           0.0002 * tRolls, futures-month-end.js). That 2 bps is a splice-day penalty on a day whose price jump was
+ *                           replaced by the IEF-beta return, not a fill cost, so repriceZnRows leaves it where it is: a measured ZN rate
+ *                           replaces the 4 bps and nothing else. (futures-month-end.json rowsOut carries no per-row roll count; the run's
+ *                           rollGuardDays.ZN says how many days in the whole history were guarded.)
  * DBMF is held, never flipped, and pays nothing here; cash pays nothing. The RM proxy family (rmRows / rmDaily) is NOT re-priced: its
  * costs are inside the text of risk-manager.js, which this library reads verbatim and never edits.
  */
@@ -211,6 +216,10 @@ function parseMeasuredCosts(text, where = "(text)") {
   if (j.spec !== COST_SPEC) bad(`spec must be "${COST_SPEC}" (it is ${JSON.stringify(j.spec)})`);
   const unknown = Object.keys(j).filter((k) => !COST_KEYS.includes(k) && !COST_META_KEYS.includes(k));
   if (unknown.length) bad(`unknown key(s) ${unknown.join(", ")} — it holds exactly ${COST_KEYS.join(", ")} (plus ${COST_META_KEYS.join(", ")})`);
+  // JSON.parse keeps the LAST of two keys with the same name, so a hand-edited file can show one rate and be priced at another.
+  // The text is searched for each rate's name instead: twice is refused. (A rate's name inside a string value is refused too - say it
+  // another way in source / note, or take the rate out of the sentence.)
+  for (const k of COST_KEYS) { const n = (text.match(new RegExp(`"${k}"\\s*:`, "g")) || []).length; if (n > 1) bad(`${k} is written ${n} times (or its name is inside a string value) — write each rate once, plainly`); }
   const costs = {};
   for (const k of COST_KEYS) {
     const v = j[k];
@@ -248,13 +257,14 @@ function costScenario(inp, { costs, plan = "E", asOf = "2026-09-30", from = "201
  *   { assumed, measured, mults, plans, rows: [{ plan, set, mult, annualReturnPct, worstMonth, worstMonthPct, maxDDmonthEndPct }] }
  * The znRows are read ONCE and handed to every scenario, so the only thing that moves between rows is the cost.
  */
-function costCompare(inp, { measured, plans = ["E", "D2"], mults = COST_MULTS, asOf = "2026-09-30", from = "2019-06", to = "2026-09", znRows = null, assumed = ASSUMED_COSTS, cryptoKey = null } = {}) {
+function costCompare(inp, { measured, plans = ["E", "D2"], mults = COST_MULTS, asOf = "2026-09-30", from = "2019-06", to = "2026-09", znRows = null, assumed = ASSUMED_COSTS, cryptoKey = null, weightsBy = PYW } = {}) {
   const base = znRows || znWindows(), rows = [];
+  for (const plan of plans) if (!weightsBy[plan]) throw new Error(`costCompare: no weights for plan ${plan}`);
   for (const [set, c0] of [["assumed", assumed], ["measured", measured]]) {
     if (!c0) continue;
     for (const mult of mults) {                                       // one pyBuild per cost set and multiple; every plan reads that build
       const costs = scaleCosts(c0, mult), b = pyBuild(inp, { asOf, znRows: repriceZnRows(base, costs.znBpsPerRoundTrip), cryptoKey, ...costOpts(costs) });
-      for (const plan of plans) { const s = monthlyStats(b.run(from, to, PYW[plan]).mo);
+      for (const plan of plans) { const s = monthlyStats(b.run(from, to, weightsBy[plan]).mo);
         rows.push({ plan, set, mult, costs, annualReturnPct: s.annualReturnPct, worstMonth: s.worstMonth[0], worstMonthPct: s.worstMonth[1], maxDDmonthEndPct: s.maxDDmonthEndPct, months: s.months, sharpe: s.sharpe, monthlySdPct: s.monthlySdPct }); }
     }
   }

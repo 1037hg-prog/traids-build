@@ -36,9 +36,9 @@ let HOLIDAYS = {}; try { HOLIDAYS = require(path.join(REPO, "backend", "lib", "r
 /** the two files: the sha256 each was BUILT AGAINST (home's bytes on 2026-10-16) and the staged one */
 const FILES = Object.freeze([
   Object.freeze({ rel: "backend/profit-program/planE-model.js", base: "base/backend/profit-program/planE-model.js", staged: "staged/backend/profit-program/planE-model.js",
-    baseSha: "d654607668857df95f8d7b40d93e6657410719f11b14b8aa1a471d91b3390ae5", stagedSha: /*STAGED_SHA_MODEL*/"3445144182293482261d48875847aef79ddae9ca2bf026cedec811b22abd8cf0"/*END*/ }),
+    baseSha: "d654607668857df95f8d7b40d93e6657410719f11b14b8aa1a471d91b3390ae5", stagedSha: /*STAGED_SHA_MODEL*/"a10d95e6c851f9c4ad558bd6b70e443b068196ecb16ed6a2fdf322ef727d9ebc"/*END*/ }),
   Object.freeze({ rel: "backend/profit-program/planE-baseline.js", base: "base/backend/profit-program/planE-baseline.js", staged: "staged/backend/profit-program/planE-baseline.js",
-    baseSha: "caaa50ce4471602569c3c0811b8f0f96bdbbaa92416734f22f7365cbeb98e515", stagedSha: /*STAGED_SHA_BASELINE*/"a1d274f8bd9c4d294614a5cb531701a6d966e1e9896aa7ec2df34b5886bb51c0"/*END*/ }),
+    baseSha: "caaa50ce4471602569c3c0811b8f0f96bdbbaa92416734f22f7365cbeb98e515", stagedSha: /*STAGED_SHA_BASELINE*/"23f23f16763117bf0ab28d2390b6d140c5ea4c929eb30c55326045ecb4c3efaf"/*END*/ }),
 ]);
 const isCode = (rel) => /\.(c?js)$/.test(rel);
 const P = (root, rel) => path.join(root, ...rel.split("/"));

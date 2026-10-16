@@ -49,7 +49,7 @@ It then runs the staged script with `--measured-costs`, removes the one printed 
 deletes the one new JSON key and compares with the default JSON again. `py.E.annualReturnPct` — what `backend/risk-manager.js`
 `planEStated()` reads — is the same number in both modes.
 
-`node docs/capital-model-measured-cost/2026-10-16/selftest.cjs` → `ALL 55 CHECKS PASSED` (about 12 s, offline).
+`node docs/capital-model-measured-cost/2026-10-16/selftest.cjs` → `ALL 65 CHECKS PASSED` (about 15 s, offline).
 
 ## What is missing from this clean copy
 
@@ -81,10 +81,13 @@ the real data is the only place that can be shown.
 
 ## What is assumed
 
-* Every stored ZN month-end window carries **exactly 4 bps** of round-trip cost. `futures-month-end.js` is the file that subtracts it and
-  `znWindows()` does the same for the month it builds; the staged `repriceZnRows(rows, bps, carriedBps = 4)` adds that 4 bps back and
-  takes the measured one off. If some stored row ever carried a different figure, this is the line to change — it is the one assumption
-  the measured mode makes about data it cannot see from here.
+* Every stored ZN month-end window carries **4 bps of round-trip trading cost**, the figure `futures-month-end.js` subtracts; the staged
+  `repriceZnRows(rows, bps, carriedBps = 4)` adds that 4 bps back and takes the measured one off. `futures-month-end.js:44` also
+  subtracts **0.0002 per roll-guard day** in the window (`tre = exp(sum) - 1 - 0.0004 - 0.0002 * tRolls`): that 2 bps is a splice-day
+  penalty on a day whose price jump was replaced by the IEF-beta return, **not a fill cost**, so the measured rate deliberately does not
+  replace it and it stays in every row. (`rowsOut` carries no per-row roll count; the run's `rollGuardDays.ZN` says how many days in the
+  whole history were guarded.) If a stored row ever carried a different trading-cost figure, `carriedBps` is the line to change — it is
+  the one assumption the measured mode makes about data it cannot see from here.
 * At the carried rate the ZN rows come back with their stored `tre` untouched (not `tre + d - d`), so "measured = assumed" is exact to
   the last bit and not merely to two decimals.
 * The **RM proxy family** (`rmRows` / `rmDaily`, the daily table the baseline also prints) is **not** re-priced. Its costs — 25 bps a
@@ -101,8 +104,8 @@ the real data is the only place that can be shown.
 | `staged/…` | the two changed files, at their repo paths |
 | `deploy.cjs --plan \| --apply` | the plan (sha256 now / base / staged, state, fences) and the write mode; refuses on DRIFT |
 | `rollback.cjs --plan \| --apply` | puts the base copies back, byte for byte |
-| `selftest.cjs` | 55 checks on the synthetic fixture; ends `ALL 55 CHECKS PASSED` |
-| `mutants.cjs` | 20 deliberate breakages of the staged code; each must be caught by the selftest |
+| `selftest.cjs` | 65 checks on the synthetic fixture; ends `ALL 65 CHECKS PASSED` |
+| `mutants.cjs` | 27 deliberate breakages of the staged code, of `deploy.cjs` and of `rollback.cjs`; each must be caught by the selftest |
 | `make-fixture.cjs`, `fixtures/fixture-spec.json` | the fixture generator and its frozen seeds, knobs, shas and known answers |
 | `record.cjs --dry` / `record.cjs` | the change-registry row and the agent-ledger GOVERNANCE line |
 | `stamp.cjs --check \| --write` | keeps `deploy.cjs`'s staged sha256s in step with the staged files |
@@ -129,14 +132,38 @@ must not have.
 
 ### How it was checked
 
-Build-check loop, as AGENTS.md asks: the builder wrote the package and a separate checker ran every check read-only and tried its own
-mutations. Commands, all offline:
+Build-check loop, as AGENTS.md asks: a builder wrote the package, then a separate checker session ran every check read-only, rebuilt the
+central claim by hand and tried twenty mutations of its own.
+
+**Cycle 1** — every shipped check passed and was deterministic, and the checker's own reconstruction of the byte-identity claim agreed.
+Six of its twenty mutants survived, and it found one wrong sentence:
+
+1. the "exactly 4 bps" wording was wrong (the roll-guard 2 bps above) — fixed here, in the model's header and in `record.cjs`'s
+   `assumes`, which is what would have gone into `change-registry.json` permanently;
+2. **nothing exercised the write path** of `deploy.cjs` / `rollback.cjs`: drift refusal disabled, clock fence disabled, a fail-open
+   process list and a rollback that writes the *staged* bytes all survived — section 7 of the selftest now drives `make()`,
+   `writeUnit()`, `fences()`, `plan()` and `writeExact` against a scratch repo with an injected clock, process list and gate, and those
+   four mutants are in `mutants.cjs`;
+3. the fixture could not tell a **worst-month label** apart between plans (every plan of `PYW` is the same leg mix at a different size,
+   so they share one worst month): `costCompare` now takes an optional `weightsBy`, and the selftest prices two weight sets whose worst
+   months differ (the note alone, and everything but the note);
+4. the JSON block was tagged `planE-measured-cost-v1`, one letter from the file format's `planE-measured-costs-v1` — the block is now
+   `planE-baseline-measured-cost-block-v1` and a check holds the two apart;
+5. a rate written twice in one file was taken from the last copy silently — now refused;
+6. the selftest could not be re-run after an apply (its base-copy check failed) — it now passes when home holds either the base or the
+   staged bytes, and fails only on real drift.
+
+The checker's one other surviving mutant (a cache inside `loadMeasuredCosts`) is an equivalent mutant: the function is called once per
+process and by nothing else, so the cache can never be hit. **Cycle 2** (this state) is what the commands below report. The cycle-2
+fixes have not themselves been through an independent checker; that is the next cycle, and the commands are the same.
+
+Commands, all offline:
 
 ```
 node docs/capital-model-measured-cost/2026-10-16/deploy.cjs --plan
 node docs/capital-model-measured-cost/2026-10-16/rollback.cjs --plan
-node docs/capital-model-measured-cost/2026-10-16/selftest.cjs            # ALL 55 CHECKS PASSED
-node docs/capital-model-measured-cost/2026-10-16/mutants.cjs             # ALL 20 MUTANTS KILLED  (~3.5 min)
+node docs/capital-model-measured-cost/2026-10-16/selftest.cjs            # ALL 65 CHECKS PASSED
+node docs/capital-model-measured-cost/2026-10-16/mutants.cjs             # ALL 27 MUTANTS KILLED  (~4.5 min)
 node docs/capital-model-measured-cost/2026-10-16/record.cjs --dry
 node docs/capital-model-measured-cost/2026-10-16/stamp.cjs --check
 node --check on every .cjs and both staged files
@@ -152,6 +179,18 @@ edits no existing test. The checks it adds are new.
 2. `node backend/profit-program/planE-baseline.js --measured-costs <your measured file>` — the new block. The example file in this
    package is **not** a measurement; the three rates have to come from fills measured at home before any number from it is quoted.
 3. `node docs/capital-model-measured-cost/2026-10-16/record.cjs --dry`, then without `--dry`.
+
+`selftest.cjs` is a **pre-apply** check in spirit — it compares the base code with the staged code — but it passes after the apply too
+(its base-copy check accepts home holding either the base or the staged bytes, and fails only on real drift), so it can be re-run at any
+time. Two more things worth knowing:
+
+* `planE-baseline.js` now **exits 2 on any argument** it does not know, where it used to ignore arguments. Nothing in the repo calls it
+  with one, and the selftest checks that the old script still ignored them, so the comparison above is like for like.
+* `measuredCosts.file` and the printed "measured rates read from …" line record the path **as typed**, which at home may be an absolute
+  path under a home directory. Pass a relative path if that JSON is going anywhere.
+* `backend/profit-program/planE-fill-slippage.js` already measures the notional-weighted ETF fill gap in basis points and says the model
+  assumes 0 and 5 bps per trade — that is the natural source for `equityBpsPerSide`. The crypto and ZN rates have no such measurement in
+  the repo yet.
 
 A rollback (`rollback.cjs --apply`) puts both files back byte for byte. A `planE-baseline.json` written by a measured run keeps its
 `measuredCosts` key until the baseline is run again; every other key is the same either way.

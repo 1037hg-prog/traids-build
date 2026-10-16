@@ -56,12 +56,13 @@ check("clock: today is past the fixture's last day (the model only reads complet
 // ── 1. the package itself ────────────────────────────────────────────────────────────────────────────────────────────────────
 const DEP = require("./deploy.cjs");
 for (const f of DEP.FILES) {
-  check(`package: base/${f.rel} is the live file it was built against`, () => {
+  check(`package: base/${f.rel} is the live file it was built against (or the apply has happened)`, () => {
     const live = path.join(REPO, ...f.rel.split("/")), b = path.join(PKG, ...f.base.split("/"));
     if (!fs.existsSync(live)) return `${f.rel} is missing from this copy of the repo`;
     const sl = sha(fs.readFileSync(live)), sb = sha(fs.readFileSync(b));
     if (sb !== f.baseSha) return `base copy sha ${sb.slice(0, 12)} is not the declared ${f.baseSha.slice(0, 12)}`;
-    return sl === sb ? true : `the live file (${sl.slice(0, 12)}) is not the base copy (${sb.slice(0, 12)}) — the package must be rebuilt against it`;
+    if (sl === sb) return true;                                           // before the apply: home holds the base bytes
+    return sl === f.stagedSha ? true : `the live file (${sl.slice(0, 12)}) is neither the base copy (${sb.slice(0, 12)}) nor the staged one (${f.stagedSha.slice(0, 12)}) — DRIFT: the package must be rebuilt against it`;
   });
   check(`package: staged/${f.rel} matches its declared sha and parses`, () => {
     const s = path.join(PKG, ...f.staged.split("/")), ss = sha(fs.readFileSync(s));
@@ -136,6 +137,11 @@ check("measured: py.E / py.D2 (what risk-manager.js reads) are untouched by the 
 });
 
 // ── 4. known answers ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+const M = LIB.staged, INP = M.loadInputs(), ZN = M.znWindows();
+/** two weight sets whose worst months do NOT coincide (the note alone, and everything but the note) — section 5 reads this */
+const PLAN_W = { ZNONLY: { L: 4.2, q: 0, s: 0, c: 0, g: 0, e: 0, db: 0 }, NOZN: { L: 0, q: 0.15, s: 0.15, c: 0.15, g: 0.10, e: 0.10, db: 0.15 } };
+const perPlan = Object.fromEntries(M.costCompare(INP, { measured: MEASURED, plans: ["ZNONLY", "NOZN"], mults: [1], znRows: ZN, weightsBy: PLAN_W })
+  .rows.map((r) => [`${r.plan}/${r.set}`, [r.worstMonth, r.worstMonthPct, r.annualReturnPct]]));
 const rowKey = (r) => `${r.plan}/${r.set}/x${r.mult}`;
 /** the block as frozen: the one line naming the cost file holds this run's temp path, so that path alone is normalised away */
 const blockText = (WB.block || []).map((l) => l.split(ROOT).join("<tmp>")).join("\n");
@@ -143,6 +149,7 @@ const knownNow = {
   defaultStdoutSha: sha(R.base.out), defaultJsonSha: sha(J.base), measuredBlockSha: sha(blockText), measuredBlockLines: (WB.block || []).length,
   py: { E: JSON.parse(J.base).py.E.annualReturnPct, D2: JSON.parse(J.base).py.D2.annualReturnPct, worstE: JSON.parse(J.base).py.E.worstMonth, ddE: JSON.parse(J.base).py.E.maxDDmonthEndPct },
   measured: MEASURED, rows: Object.fromEntries((OM.measuredCosts ? OM.measuredCosts.rows : []).map((r) => [rowKey(r), [r.annualReturnPct, r.worstMonth, r.worstMonthPct, r.maxDDmonthEndPct]])),
+  blockSpec: OM.measuredCosts ? OM.measuredCosts.spec : null, perPlanWorstMonth: perPlan,
 };
 if (FREEZE) {
   const s2 = F.loadSpec(); s2.known = knownNow;
@@ -179,7 +186,6 @@ if (spec.known && spec.known.rows) {
 }
 
 // ── 5. the arithmetic ────────────────────────────────────────────────────────────────────────────────────────────────────────
-const M = LIB.staged, INP = M.loadInputs(), ZN = M.znWindows();
 const rowsOf = (o) => Object.fromEntries(o.measuredCosts.rows.map((r) => [rowKey(r), r]));
 const RS = rowsOf(OM);
 check("arithmetic: assumed x1 reproduces the script's own PY table exactly (same rule, same windows, same cost)", () => {
@@ -254,6 +260,28 @@ check("arithmetic: the library's costScenario agrees with the row the script wro
   return s.annualReturnPct === r.annualReturnPct && s.worstMonth === r.worstMonth && s.maxDDmonthEndPct === r.maxDDmonthEndPct ? true : `${JSON.stringify([s.annualReturnPct, s.worstMonth, s.maxDDmonthEndPct])} vs ${JSON.stringify([r.annualReturnPct, r.worstMonth, r.maxDDmonthEndPct])}`;
 });
 
+check("arithmetic: the worst month is read PER PLAN (two plans whose worst months differ, through costCompare)", () => {
+  // every plan of PYW holds the same leg mix at a different size, so on this fixture they all share one worst month, and a label taken
+  // from plan E would look right. Two weight sets that do NOT share one are priced here instead: the note alone, and everything but
+  // the note. Each row is held to the same plan priced on its own (costScenario).
+  const got = perPlan;
+  if (got["ZNONLY/measured"][0] === got["NOZN/measured"][0]) return `the two weight sets share the worst month ${got["ZNONLY/measured"][0]} — this check proves nothing on this fixture any more`;
+  for (const set of ["assumed", "measured"]) for (const plan of ["ZNONLY", "NOZN"]) {
+    const costs = M.scaleCosts(set === "assumed" ? M.ASSUMED_COSTS : MEASURED, 1);
+    const s = M.costScenario(INP, { costs, weights: PLAN_W[plan], znRows: ZN }), g = got[`${plan}/${set}`];
+    if (g[0] !== s.worstMonth || g[1] !== s.worstMonthPct || g[2] !== s.annualReturnPct) return `${plan}/${set}: the table says ${JSON.stringify(g)}, the plan priced on its own says ${JSON.stringify([s.worstMonth, s.worstMonthPct, s.annualReturnPct])}`;
+  }
+  const frozen = spec.known && spec.known.perPlanWorstMonth;
+  if (frozen && JSON.stringify(got) !== JSON.stringify(frozen)) return `the rows moved from the frozen ones: ${JSON.stringify(got)} vs ${JSON.stringify(frozen)}`;
+  return true;
+});
+check("measured: the JSON block's own spec tag is not the measured-cost FILE's spec tag (two tags a key apart are misread)", () => {
+  if (OM.measuredCosts.spec === M.COST_SPEC) return `the block is tagged ${OM.measuredCosts.spec}, which is also the file format's tag`;
+  if (OM.measuredCosts.read.spec !== M.COST_SPEC) return `the file's spec is recorded as ${OM.measuredCosts.read.spec}`;
+  const frozen = spec.known && spec.known.blockSpec;
+  return !frozen || OM.measuredCosts.spec === frozen ? true : `the block is tagged ${OM.measuredCosts.spec}, frozen ${frozen}`;
+});
+
 // ── 6. the refusals ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 const BAD = [
   ["a wrong spec", { ...MEASURED, spec: "something-else" }, /spec must be/],
@@ -267,6 +295,7 @@ const BAD = [
   ["a note that is not a string", { ...MEASURED, note: 7 }, /note must be a string/],
   ["a JSON list instead of an object", [1, 2, 3], /not a JSON object/],
   ["text that is not JSON", "{ not json", /not JSON/],
+  ["the same rate written twice (JSON.parse would keep the last)", '{ "spec": "planE-measured-costs-v1", "equityBpsPerSide": 99999, "equityBpsPerSide": 3.4, "cryptoBpsPerRoundTrip": 38, "znBpsPerRoundTrip": 6.5 }', /equityBpsPerSide is written 2 times/],
 ];
 for (const [what, body, re] of BAD) {
   check(`refusal: ${what} is refused (exit 2, nothing written)`, () => {
@@ -297,6 +326,101 @@ check("refusal: the base script ignores arguments, so the staged refusals are ne
   const r = run("base", ["--measured-costs", MF]);
   return r.status === 0 ? true : `the base script exited ${r.status} on an argument it used to ignore — the comparison above would not be like for like`;
 });
+// ── 7. the write path of deploy.cjs and rollback.cjs, on a scratch repo (nothing in the real repo is touched) ─────────────────
+const SR = path.join(ROOT, "scratch-repo"), SRF = (rel) => path.join(SR, ...rel.split("/"));
+const putScratch = (which) => { for (const f of DEP.FILES) { const p = SRF(f.rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.copyFileSync(path.join(PKG, ...(which === "base" ? f.base : f.staged).split("/")), p); } };
+const SAT = Date.parse("2026-10-17T23:00:00Z");          // a Saturday, 17:00 MT: the clock fence is clear
+const MON = Date.parse("2026-10-19T16:00:00Z");          // a Monday, 10:00 MT: inside 05:30-16:00 MT
+const okGate = { what: "a fake gate", run: () => ({ ok: true, line: "ALL 99 CHECKS PASSED (fake)" }) };
+const deps = (over = {}) => ({ repo: SR, pkg: PKG, now: () => SAT, log: () => {}, listProcs: () => [], chainStatus: () => null, holidays: DEP.HOLIDAYS, run: () => { throw new Error("the write-path checks must never spawn a child"); }, ...over });
+const scratchSha = (rel) => sha(fs.readFileSync(SRF(rel)));
+
+check("deploy: the fences are clear on a Saturday with an empty process list, and each one refuses on its own", () => {
+  putScratch("base");
+  const clear = DEP.make(deps()).fences(); if (clear.length) return `the clear case refused: ${clear.join("; ")}`;
+  const clock = DEP.make(deps({ now: () => MON })).fences();
+  if (!clock.some((x) => /inside 05:30-16:00 MT/.test(x))) return `the clock fence did not fire on a Monday 10:00 MT: ${JSON.stringify(clock)}`;
+  const proc = DEP.make(deps({ listProcs: () => [{ pid: 4321, cmd: `node ${SR}/backend/profit-program/planE-levers.js` }] })).fences();
+  if (!proc.some((x) => /profit-program script is running/.test(x))) return `a running profit-program script did not refuse: ${JSON.stringify(proc)}`;
+  const chainProc = DEP.make(deps({ listProcs: () => [{ pid: 99, cmd: "node automation/close-chain.cjs" }] })).fences();
+  if (!chainProc.some((x) => /close chain is running/.test(x))) return `a running close chain did not refuse: ${JSON.stringify(chainProc)}`;
+  const unreadable = DEP.make(deps({ listProcs: () => { throw new Error("ps died"); } })).fences();
+  if (!unreadable.some((x) => /could not be read/.test(x))) return `an unreadable process list did not refuse (fail-closed): ${JSON.stringify(unreadable)}`;
+  const chain = DEP.make(deps({ now: () => SAT, chainStatus: () => ({ started: new Date(SAT - 36e5).toISOString(), finished: null }) })).fences();
+  if (!chain.some((x) => /close chain started/.test(x))) return `an unfinished close chain did not refuse: ${JSON.stringify(chain)}`;
+  const done = DEP.make(deps({ chainStatus: () => ({ started: new Date(SAT - 36e5).toISOString(), finished: new Date(SAT - 18e5).toISOString() }) })).fences();
+  return done.length ? `a FINISHED chain refused: ${done.join("; ")}` : true;
+});
+check("deploy: --apply writes both staged files on a scratch repo, and a rollback puts the base bytes back", () => {
+  putScratch("base");
+  const a = DEP.make(deps()).writeUnit({ to: "staged", gate: okGate });
+  if (a.result !== "done" || a.written.length !== 2) return `apply: ${a.result} ${JSON.stringify(a.why || a.written)}`;
+  for (const f of DEP.FILES) if (scratchSha(f.rel) !== f.stagedSha) return `after the apply ${f.rel} is ${scratchSha(f.rel).slice(0, 12)}, not the staged ${f.stagedSha.slice(0, 12)}`;
+  if (!DEP.plan({ repo: SR, pkg: PKG }).applied) return "plan() does not read `applied` after the apply";
+  const again = DEP.make(deps()).writeUnit({ to: "staged", gate: okGate });
+  if (again.result !== "done" || again.written.length) return `a second apply wrote ${JSON.stringify(again.written)} (it must be a no-op)`;
+  const b = require("./rollback.cjs").rollback(deps());
+  if (b.result !== "done" || b.written.length !== 2) return `rollback: ${b.result} ${JSON.stringify(b.why || b.written)}`;
+  for (const f of DEP.FILES) {
+    if (scratchSha(f.rel) !== f.baseSha) return `after the rollback ${f.rel} is ${scratchSha(f.rel).slice(0, 12)}, not the base ${f.baseSha.slice(0, 12)}`;
+    if (!fs.readFileSync(SRF(f.rel)).equals(fs.readFileSync(path.join(PKG, ...f.base.split("/"))))) return `${f.rel} is not byte-identical to base/${f.rel}`;
+  }
+  return true;
+});
+check("deploy: DRIFT at home refuses and writes nothing (apply and rollback both)", () => {
+  putScratch("base");
+  fs.appendFileSync(SRF(DEP.FILES[0].rel), "\n// someone changed this at home\n");
+  const drifted = scratchSha(DEP.FILES[0].rel), P = DEP.plan({ repo: SR, pkg: PKG });
+  if (!P.problems.some((x) => /is DRIFT at home/.test(x))) return `plan() does not call it DRIFT: ${JSON.stringify(P.problems)}`;
+  for (const [what, r] of [["apply", DEP.make(deps()).writeUnit({ to: "staged", gate: okGate })], ["rollback", require("./rollback.cjs").rollback(deps())]]) {
+    if (r.result !== "refused" || !r.why.some((x) => /DRIFT/.test(x))) return `${what}: ${r.result} ${JSON.stringify(r.why)}`;
+  }
+  if (scratchSha(DEP.FILES[0].rel) !== drifted) return "the drifted file was written anyway";
+  return scratchSha(DEP.FILES[1].rel) === DEP.FILES[1].baseSha ? true : "the other file was written while one was DRIFT";
+});
+check("deploy: the two files are one unit — a half-applied pair refuses and writes nothing", () => {
+  putScratch("base");
+  fs.copyFileSync(path.join(PKG, ...DEP.FILES[0].staged.split("/")), SRF(DEP.FILES[0].rel));   // one applied, one base
+  const P = DEP.plan({ repo: SR, pkg: PKG });
+  if (!P.problems.some((x) => /different states/.test(x))) return `plan() allows the half-applied pair: ${JSON.stringify(P.problems)}`;
+  const r = DEP.make(deps()).writeUnit({ to: "staged", gate: okGate });
+  if (r.result !== "refused") return `apply: ${r.result}`;
+  return scratchSha(DEP.FILES[0].rel) === DEP.FILES[0].stagedSha && scratchSha(DEP.FILES[1].rel) === DEP.FILES[1].baseSha ? true : "a refused apply wrote something";
+});
+check("deploy: a fence, a failing gate, or a fence that closes DURING the gate all refuse before anything is written", () => {
+  putScratch("base");
+  const fenced = DEP.make(deps({ now: () => MON })).writeUnit({ to: "staged", gate: okGate });
+  if (fenced.result !== "refused" || !fenced.why.some((x) => /05:30-16:00 MT/.test(x))) return `the clock fence did not refuse the apply: ${fenced.result} ${JSON.stringify(fenced.why)}`;
+  const badGate = DEP.make(deps()).writeUnit({ to: "staged", gate: { what: "a failing gate", run: () => ({ ok: false, why: "2 of 55 CHECKS FAILED" }) } });
+  if (badGate.result !== "refused" || !badGate.why.some((x) => /did not pass/.test(x))) return `a failing gate did not refuse: ${badGate.result} ${JSON.stringify(badGate.why)}`;
+  let t = SAT;                                                         // the clock walks into the fenced window while the gate runs
+  const late = DEP.make(deps({ now: () => t })).writeUnit({ to: "staged", gate: { what: "a slow gate", run: () => { t = MON; return { ok: true, line: "ALL 99 CHECKS PASSED (fake)" }; } } });
+  if (late.result !== "refused") return `the fences were not asked again after the gate: ${late.result}`;
+  for (const f of DEP.FILES) if (scratchSha(f.rel) !== f.baseSha) return `${f.rel} was written by a refused apply`;
+  return true;
+});
+check("deploy: a staged copy that does not match its declared sha refuses the apply but not the rollback", () => {
+  putScratch("base");
+  const fake = path.join(ROOT, "pkg-bad-staged");
+  for (const e of ["deploy.cjs", "rollback.cjs"]) fs.cpSync(path.join(PKG, e), path.join(fake, e));
+  for (const f of DEP.FILES) { for (const rel of [f.base, f.staged]) { const d = path.join(fake, ...rel.split("/")); fs.mkdirSync(path.dirname(d), { recursive: true }); fs.copyFileSync(path.join(PKG, ...rel.split("/")), d); } }
+  fs.appendFileSync(path.join(fake, ...DEP.FILES[0].staged.split("/")), "\n// a staged copy nobody reviewed\n");
+  const ap = DEP.plan({ repo: SR, pkg: fake });
+  if (!ap.problems.some((x) => /staged copy/.test(x))) return `the apply plan accepts a changed staged copy: ${JSON.stringify(ap.problems)}`;
+  const rp = DEP.plan({ repo: SR, pkg: fake, forRollback: true });
+  if (rp.problems.some((x) => /staged copy/.test(x))) return `the rollback plan refuses on a changed staged copy: ${JSON.stringify(rp.problems)}`;
+  fs.appendFileSync(path.join(fake, ...DEP.FILES[0].base.split("/")), "\n// a base copy nobody reviewed\n");
+  const rp2 = DEP.plan({ repo: SR, pkg: fake, forRollback: true });
+  return rp2.problems.some((x) => /base copy/.test(x)) ? true : `the rollback plan accepts a changed BASE copy: ${JSON.stringify(rp2.problems)}`;
+});
+check("deploy: writeExact leaves the file as the new bytes and reads them back", () => {
+  const p = path.join(ROOT, "write-exact.txt"), buf = Buffer.from("one\ntwo\n");
+  DEP.writeExact(p, buf);
+  if (!fs.readFileSync(p).equals(buf)) return "the bytes do not read back";
+  DEP.writeExact(p, Buffer.from("three\n"));
+  return fs.readFileSync(p).toString() === "three\n" && !fs.readdirSync(ROOT).some((f) => /write-exact\.txt\.tmp/.test(f)) ? true : "a temp file was left behind, or the second write did not land";
+});
+
 const D_FILES_SHAS = () => DEP.FILES.flatMap((f) => [f.baseSha, f.stagedSha]);
 check("record.cjs --dry prints both records, says it would be refused until the apply, and writes nothing", () => {
   const data = path.join(REPO, "backend", "data"), before = ["change-registry.json", "agent-ledger.jsonl", "registry-write.lock"].map((f) => { const p = path.join(data, f); return [f, fs.existsSync(p) ? sha(fs.readFileSync(p)) : null]; });

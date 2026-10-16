@@ -78,7 +78,7 @@
  "known": {
   "defaultStdoutSha": "cf913111d86153aacc25dd0567a032e92e525fc3611d61439969c7d6050f5612",
   "defaultJsonSha": "9981b6941b7c15ab493f5f7de8332addd2449d8dc1a3dfebd6aea67059e635de",
-  "measuredBlockSha": "256468239fa1a0bdf2260615b2b745b5128f29c4602c3681ab119d9f9b4ca0b0",
+  "measuredBlockSha": "4725c8ffb8742296023a7297e60bd4204aef631d208b2cf78322fe1b83bff5b0",
   "measuredBlockLines": 23,
   "py": {
    "E": 24.24,
@@ -169,6 +169,29 @@
     "2021-01",
     -10.26,
     -23.89
+   ]
+  },
+  "blockSpec": "planE-baseline-measured-cost-block-v1",
+  "perPlanWorstMonth": {
+   "ZNONLY/assumed": [
+    "2021-02",
+    -7.82,
+    9.46
+   ],
+   "ZNONLY/measured": [
+    "2021-02",
+    -7.93,
+    8.1
+   ],
+   "NOZN/assumed": [
+    "2021-01",
+    -1.77,
+    15.24
+   ],
+   "NOZN/measured": [
+    "2021-01",
+    -1.76,
+    15.39
    ]
   }
  }
