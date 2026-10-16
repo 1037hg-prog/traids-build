@@ -1,0 +1,2 @@
+const syms = process.argv.slice(2);
+(async()=>{ for (const s of syms){ try{ const r=await fetch(`http://localhost:3002/api/yahoo/${encodeURIComponent(s)}/history?days=14000&interval=1d`,{signal:AbortSignal.timeout(120000)}); const j=await r.json(); const b=j.bars||[]; const raw=b.filter(x=>x.adjSource!=="dividend-adjusted").length; console.log(s.padEnd(10), r.status, b.length, b[0]?.date, b[b.length-1]?.date, "raw:",raw, j.degraded?"DEGRADED":""); }catch(e){ console.log(s, "ERR", e.message);} } })();

@@ -1,0 +1,1 @@
+This folder is a generated clean copy of TRAIDS (code only). It is rebuilt at home by make-clean-copy.cjs: everything here except .git and this file is replaced on each rebuild.
