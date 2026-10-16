@@ -22,12 +22,14 @@
  *   r231-crypto-vote-sized.json   w3-r231        R191 (and R231's own shadow run)
  *   alpaca-mirror.jsonl           the board      both
  *   alpaca-mirror-exits.jsonl     the board      both
+ *   r191-crypto-trend.jsonl       w3-r191        R191 itself (its client ids) — the shadow tree only
+ *   r231-crypto-vote-sized.jsonl  w3-r231        R231 itself — the shadow tree only
  *   REAL tree:   a file is carried from home when its owner is HOME and a reader of it is SERVER-owned. A file whose owner is server-owned is never
  *                written there (the VPS writes it; home's copy is a pulled copy, never pushed back).
  *   SHADOW tree: a file is carried when a HOME-owned unit's shadow run reads it (its own state included): from home when its owner is home, else
  *                copied on the VPS from the real tree (the writer's own copy, under the real tree's locks).
  *   The board's owner is every "w5-*" unit of the map: none named = home (W5 not deployed) · all home = home · all server = server · a mix =
- *   REFUSED for the board's files (the job will not guess which side writes them). w3-r191 / w3-r231 must each be named "home" or "server".
+ *   the board's two files are REFUSED (exit 1), the other files still go. w3-r191 / w3-r231 must each be named "home" or "server".
  *   Nothing to carry anywhere (both units server-owned and the board on the server) = this job is RETIRED: it says so and exits 0, no ssh.
  * NEVER carried: a switch (r191-OFF, r231-OFF, *-HALT), a lock, any other file. A file is carried only after it validates at home (the state:
  * JSON with a coins table; a jsonl: every line JSON, the file ending in a newline) — a bad file is not pushed over the server's copy.
@@ -36,7 +38,9 @@
  * temp names INSIDE the target folder (.carry-in-<run>-<file>), then ONE ssh per tree, under that tree's w3-r191.flock and w3-r231.flock (the
  * locks w3-run.cjs runs each unit's entry under, so a unit never reads a half-carried set), checks every temp's sha256, copies a real-tree source
  * for the shadow (a jsonl copy must end in a newline: a mid-append copy is dropped for this run), sets 0644 and renames each into place. Any
- * temp left is removed. A lock busy past the wait: nothing is moved in that tree this run (exit 3, WARN). Each script stays under SCRIPT_MAX
+ * temp left is removed. A lock busy past the wait: nothing is moved in that tree this run (exit 3, WARN); a lock file
+ * that cannot be opened is a FAULT (exit 1). Just before each tree's upload home's map is read again: if its bytes changed since the plan (a
+ * cutover meanwhile), nothing moves in that tree (exit 1). Every carry run, an early refusal too, writes the status file. Each script stays under SCRIPT_MAX
  * characters (scripts over ~8,190 characters have arrived cut from home — see docs/server/wave7-pm/w7-lib.cjs).
  *
  *   node deploy/server/r191-r231-carry.cjs              carry (ssh/scp to host "traids")
@@ -60,6 +64,9 @@ const FILES = [
   { file: "r231-crypto-vote-sized.json", owner: "w3-r231", readers: ["w3-r191"], kind: "state" },
   { file: "alpaca-mirror.jsonl", owner: BOARD, readers: ["w3-r191", "w3-r231"], kind: "jsonl" },
   { file: "alpaca-mirror-exits.jsonl", owner: BOARD, readers: ["w3-r191", "w3-r231"], kind: "jsonl" },
+  // each runner's OWN ledger (the client ids it has used): read only by itself, so carried only into the SHADOW tree while it is home-owned
+  { file: "r191-crypto-trend.jsonl", owner: "w3-r191", readers: [], kind: "jsonl" },
+  { file: "r231-crypto-vote-sized.jsonl", owner: "w3-r231", readers: [], kind: "jsonl" },
 ];
 const SCRIPT_MAX = 5000, LOCK_WAIT = 120;
 const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
@@ -79,21 +86,22 @@ function sidesOf(map) {
   return { side, errors };
 }
 /**
- * THE PLAN (pure). map -> { real: [{ file, from: "home" }], shadow: [{ file, from: "home"|"real" }], errors, notes, retired }
+ * THE PLAN (pure). map -> { real: [{ file, from: "home" }], shadow: [{ file, from: "home"|"real" }], errors (map-level: nothing carried),
+ *   refused: [{ file, why }] (that file only: the board half moved), notes, retired }
  */
 function planCarry(map) {
-  const { side, errors } = sidesOf(map), notes = [], real = [], shadow = [];
-  if (errors.length) return { real, shadow, errors, notes, retired: false };
+  const { side, errors } = sidesOf(map), notes = [], real = [], shadow = [], refused = [];
+  if (errors.length) return { real, shadow, errors, refused, notes, retired: false };
   const srv = UNITS.filter((u) => side[u] === "server"), home = UNITS.filter((u) => side[u] === "home");
   for (const f of FILES) {
     const own = side[f.owner];
     const realNeed = f.readers.some((r) => srv.includes(r));
     const shadowNeed = [...f.readers, ...(f.owner === BOARD ? [] : [f.owner])].some((r) => home.includes(r));
-    if (own == null) { if (realNeed || shadowNeed) errors.push(`${f.file}: the board is half moved (the map's w5-* units are not all on one side) — not carried until they are`); continue; }
+    if (own == null) { if (realNeed || shadowNeed) refused.push({ file: f.file, why: "the board is half moved (the map's w5-* units are not all on one side) — not carried until they are" }); continue; }
     if (realNeed) { if (own === "home") real.push({ file: f.file, from: "home" }); else notes.push(`${f.file}: written on the VPS (its owner is server-owned) — never pushed into the real tree`); }
     if (shadowNeed) shadow.push({ file: f.file, from: own === "home" ? "home" : "real" });
   }
-  return { real, shadow, errors, notes, retired: !real.length && !shadow.length && !errors.length, side };
+  return { real, shadow, errors, refused, notes, retired: !real.length && !shadow.length && !refused.length, side };
 }
 
 /** validate home's bytes of a carried file (null = fine, else why) */
@@ -116,11 +124,13 @@ function readScript(paths) {
  * one tree: under its two flocks (and, when a source is the real tree, the real tree's two flocks too) verify each uploaded temp, copy each
  * real-tree source, rename into place. items: [{ file, sha, from: "home"|"real" }]
  */
+/** open the lock file (exit 76 when it cannot be opened: a fault, never "busy"), then wait for it (exit 75: busy) */
+const lockLines = (fd, f, w) => [`{ exec ${fd}>>${q(f)}; } 2>/dev/null || { echo "LOCKFILE ${f}" >&2; exit 76; }`, `flock -w ${w} ${fd} || exit 75`];
 function moveScript(dir, run, items, lockWait = LOCK_WAIT) {
   const tmp = (f) => `.carry-in-${run}-${f}`, needReal = items.some((i) => i.from === "real");
   const L = ["# carry:move", "set -u", `D=${q(dir)}`, `cd "$D" || exit 7`, `trap 'rm -f -- .carry-in-${run}-*' EXIT`,
-    `exec 8>>${q(LOCKS[0])} && flock -w ${lockWait} 8 || exit 75`, `exec 9>>${q(LOCKS[1])} && flock -w ${lockWait} 9 || exit 75`];
-  if (needReal) L.push(`exec 6>>${q(REAL + "/" + LOCKS[0])} && flock -w ${lockWait} 6 || exit 75`, `exec 7>>${q(REAL + "/" + LOCKS[1])} && flock -w ${lockWait} 7 || exit 75`);
+    ...lockLines(8, LOCKS[0], lockWait), ...lockLines(9, LOCKS[1], lockWait)];
+  if (needReal) L.push(...lockLines(6, REAL + "/" + LOCKS[0], lockWait), ...lockLines(7, REAL + "/" + LOCKS[1], lockWait));
   for (const i of items) {
     const t = tmp(i.file);
     if (i.from === "home") L.push(`s=$(sha256sum -- ${q(t)} 2>/dev/null | cut -c1-64); if [ "$s" != "${i.sha}" ]; then echo "MISMATCH ${i.file}" >&2; exit 9; fi`);
@@ -144,23 +154,35 @@ function sshReal(host = HOST) {
 }
 function scpReal(host = HOST) {
   return (local, remote, { timeout = 300000 } = {}) => {
-    const r = cp.spawnSync("scp", ["-B", "-q", ...OPTS, local, `${host}:${remote}`], { encoding: "utf8", timeout, windowsHide: true });
+    // run from the local file's folder and name it by its basename: a Windows path ("C:\\...") is never taken for host:path
+    const r = cp.spawnSync("scp", ["-B", "-q", ...OPTS, path.basename(local), `${host}:${remote}`], { cwd: path.dirname(local), encoding: "utf8", timeout, windowsHide: true });
     return { ok: !r.error && r.status === 0, status: r.error ? null : r.status, err: String(r.stderr || "") + (r.error ? " " + r.error.message : "") };
   };
 }
 
 /**
- * RUN. deps: { homeData, ssh, scp, mode: "carry"|"plan"|"dry", now, statusFile, tmpDir, lockWait, writeJson (selftest) }
+ * RUN. deps: { homeData, ssh, scp, mode: "carry"|"plan"|"dry", now, statusFile, tmpDir, lockWait, writeJson, scriptMax (selftest) }
  * -> { exit, lines, plan, carried: { real: [...], shadow: [...] } }
  */
 function run(deps = {}) {
   const homeData = deps.homeData, mode = deps.mode || "carry", lines = [], say = (s) => lines.push(s), carried = { real: [], shadow: [] };
-  const done = (exit, why) => { if (why) say(why); return { exit, lines, plan, carried }; };
-  let plan = null, map = null;
-  try { map = JSON.parse(fs.readFileSync(path.join(homeData, "host-ownership.json"), "utf8")); } catch (e) { return done(1, `REFUSED: home's backend/data/host-ownership.json cannot be read (${String(e.message).slice(0, 80)}) — nothing carried`); }
+  const mapFile = path.join(homeData, "host-ownership.json");
+  // every carry-mode exit records its result (an early refusal too, so --status never shows an older run's success)
+  const done = (exit, why) => {
+    if (why) say(why);
+    if (mode === "carry" && deps.statusFile) {
+      const repo = findRepo(__dirname) || findRepo(path.dirname(deps.statusFile));
+      const rec = { schema: "r191-r231-carry-status-v1", at: (deps.now ? deps.now() : new Date()).toISOString(), exit, carried, lines };
+      try { const w = deps.writeJson || (repo ? require(path.join(repo, "backend", "lib", "atomic-write.js")).writeJsonAtomic : null); if (w) w(deps.statusFile, rec); } catch (e) { lines.splice(lines.length - 1, 0, `note the status file could not be written (${e.message.slice(0, 80)})`); }
+    }
+    return { exit, lines, plan, carried };
+  };
+  let plan = null, map = null, mapBuf = null;
+  try { mapBuf = fs.readFileSync(mapFile); map = JSON.parse(mapBuf.toString("utf8")); } catch (e) { return done(1, `REFUSED: home's backend/data/host-ownership.json cannot be read (${String(e.message).slice(0, 80)}) — nothing carried`); }
   plan = planCarry(map);
   if (plan.errors.length) { for (const e of plan.errors) say("REFUSED: " + e); return done(1, "REFUSED: the map does not say where to carry — nothing carried"); }
   for (const n of plan.notes) say("note " + n);
+  for (const x of plan.refused) say(`REFUSED ${x.file}: ${x.why}`);
   if (plan.retired) return done(0, "RETIRED: w3-r191, w3-r231 and the board are all server-owned — nothing to carry (remove this job's schedule)");
   for (const t of TREES) for (const i of plan[t.id]) say(`plan ${t.id.padEnd(6)} ${i.file} <- ${i.from === "home" ? "home" : "the VPS's real tree"}`);
   // home's bytes, validated
@@ -171,11 +193,14 @@ function run(deps = {}) {
     const why = invalid(f, buf); if (why) { bad++; say(`REFUSED ${f.file}: ${why} — not carried`); continue; }
     local.set(f.file, buf);
   }
+  bad += plan.refused.length;
   if (mode === "plan") return done(bad ? 1 : 0, bad ? "PLAN: a file would be refused (above)" : "PLAN: nothing sent (no ssh)");
   // what is on the VPS now (one read-only ssh)
   const ssh = deps.ssh || sshReal(), scp = deps.scp || scpReal();
   const ask = [...new Set(TREES.flatMap((t) => plan[t.id].flatMap((i) => [`${t.dir}/${i.file}`, ...(i.from === "real" ? [`${REAL}/${i.file}`] : [])])))];
-  const rs = readScript(ask); if (rs.length > SCRIPT_MAX) return done(1, `REFUSED: the read script is ${rs.length} characters (max ${SCRIPT_MAX})`);
+  const scriptMax = deps.scriptMax || SCRIPT_MAX;
+  if (!ask.length) return done(bad ? 1 : 0, bad ? `FAILED: ${bad} file(s) not carried (above)` : "nothing to carry");
+  const rs = readScript(ask); if (rs.length > scriptMax) return done(1, `REFUSED: the read script is ${rs.length} characters (max ${scriptMax})`);
   const r = ssh(rs, { timeout: 60000 });
   if (!r.ok) return done(1, `FAILED: ssh (read) ${r.status == null ? "failed" : "exit " + r.status}: ${String(r.err).trim().slice(0, 200)} — nothing carried`);
   const cur = new Map();
@@ -191,6 +216,11 @@ function run(deps = {}) {
     }
     if (!items.length) continue;
     if (mode === "dry") { for (const i of items) say(`DRY  ${t.id.padEnd(6)} would carry ${i.file} <- ${i.from === "home" ? "home" : "the real tree"}`); continue; }
+    const lw = deps.lockWait || LOCK_WAIT, ms = moveScript(t.dir, run_, items, lw);
+    if (ms.length > scriptMax) { fail++; say(`FAIL ${t.id}: the move script is ${ms.length} characters (max ${scriptMax}) — nothing sent to this tree`); continue; }
+    // the map again, just before this tree's move: a cutover since the plan was made could have given a file's owner to the server
+    let now = null; try { now = fs.readFileSync(mapFile); } catch { now = null; }
+    if (!now || !now.equals(mapBuf)) { fail++; say(`FAIL ${t.id}: home's host-ownership.json changed since this run's plan — nothing moved in this tree (run again)`); continue; }
     // upload home's bytes to temp names in the target folder
     let upFail = null;
     for (const i of items.filter((x) => x.from === "home")) {
@@ -199,8 +229,6 @@ function run(deps = {}) {
       try { const u = scp(lf, `${t.dir}/.carry-in-${run_}-${i.file}`); if (!u.ok) { upFail = `scp ${i.file}: ${u.status == null ? "failed" : "exit " + u.status} ${String(u.err).trim().slice(0, 160)}`; break; } }
       finally { fs.rmSync(lf, { force: true }); }
     }
-    const lw = deps.lockWait || LOCK_WAIT, ms = moveScript(t.dir, run_, items, lw);
-    if (ms.length > SCRIPT_MAX) { fail++; say(`FAIL ${t.id}: the move script is ${ms.length} characters (max ${SCRIPT_MAX})`); continue; }
     if (upFail) { fail++; say(`FAIL ${t.id}: ${upFail} — nothing moved in this tree`); ssh(`cd ${q(t.dir)} && rm -f -- .carry-in-${run_}-*`, { timeout: 60000 }); continue; }
     const m = ssh(ms, { timeout: (lw * 4 + 120) * 1000 });
     if (m.status === 75) { warn++; say(`WARN ${t.id}: a unit's lock was busy past ${lw}s — nothing moved in this tree; carried next run`); continue; }
@@ -212,11 +240,6 @@ function run(deps = {}) {
       if (i.from === "home" && got.get(i.file) !== i.sha) { fail++; say(`FAIL ${t.id.padEnd(6)} ${i.file}: the VPS's copy is not what was sent`); continue; }
       carried[t.id].push(i.file); say(`ok   ${t.id.padEnd(6)} carried ${i.file} <- ${i.from === "home" ? "home" : "the real tree"} (${got.get(i.file).slice(0, 12)})`);
     }
-  }
-  if (mode !== "dry" && deps.statusFile) {
-    const repo = findRepo(__dirname) || findRepo(path.dirname(deps.statusFile));
-    const rec = { schema: "r191-r231-carry-status-v1", at: (deps.now ? deps.now() : new Date()).toISOString(), exit: fail ? 1 : warn ? 3 : 0, carried, lines };
-    try { const w = deps.writeJson || (repo ? require(path.join(repo, "backend", "lib", "atomic-write.js")).writeJsonAtomic : null); if (w) w(deps.statusFile, rec); } catch (e) { say(`note the status file could not be written (${e.message.slice(0, 80)})`); }
   }
   if (fail) return done(1, `FAILED: ${fail} file(s) not carried (above)`);
   if (warn) return done(3, "WARN: something was not carried this run (above)");
