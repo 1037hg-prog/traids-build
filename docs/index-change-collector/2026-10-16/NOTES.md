@@ -256,37 +256,95 @@ cycle did not.** Everything below is on branch `claude/index-change-collector`.
 | `rollback.cjs --plan` | exit 0, nothing to roll back, nothing written |
 | `record.cjs --dry` | exit 0, prints the row, `test-registry.json` untouched |
 | `--dir fixtures/pages --dry` | 23 rows, 2 refusals, **0 problems** |
-| `--dir fixtures/refused --dry` | 2 rows, 3 refusals, the 2 expected problems |
+| `--dir fixtures/refused --dry` | 2 rows, 3 refusals, the 2 expected problems (exit 1, as a page with a problem should) |
 | deploy → rollback round trip + drift refused both ways, against a scratch repository | `selftest.cjs` section G |
 
 115 is the floor: **a later cycle must not report fewer checks than 115**, and no check may be removed.
 No test was edited, weakened, skipped or deleted (none existed for this code), and no test was
 registered.
 
+### The independent check: ONE cycle ran, and NOTHING it found was fixed
+
+A separate checker ran every command above read-only, verified AGENTS.md compliance, and ran 22
+mutation tests against its own copy of the package. **Its report arrived after the handover order, so
+not one of its findings has been acted on.** What it confirmed, and what it found, in its own order:
+
+**Confirmed.** All 10 commands at the documented exit codes; 115 `ok` and 0 `FAIL` counted
+independently; the three staged sha256 constants match the staged bytes; `base/` holds only its README;
+`index-changes.js` has **zero** `require(` calls and no clock or fs reference at all; the fetch layer
+requires only `crypto`; the single `fetch(` is `index-change-collector.js:146` inside `networkFetcher`;
+no secrets, no emails, no phone numbers, no real people, no hosts but `example.invalid` and the two
+public provider pages; JSON only through `atomic-write.js`; `test-registry.json` never read or written;
+nothing applied and the working tree clean. 13 of the 14 prescribed mutations were caught, several by
+many checks at once.
+
+**The finding that matters most — the suite cannot fail on its own thesis.** Making `findAnnounced()`
+fall back to the release's effective phrase passes **115/115**, and produces rows with
+`announced == effective == knownAt`. That is precisely the leak this collector exists to prevent, named
+in the task, in the header of `index-changes.js` and three times in this file. The reason the one
+fixture misses it: `fixtures/refused/spdji-effective-only-no-dateline.txt` carries its effective dates
+only in **table cells**, and its one prose sentence has no date in it, so `findReleaseEffective()`
+returns `{iso: null}` and the fallback never fires. Mechanic 2 is presented above as proven. It is
+proven only against a page that cannot exercise the leak path.
+
 ### Left to do, in order
 
-1. **Run the independent check cycle.** A checker was launched and its report was never received, so
-   **no second pair of eyes has seen this package**. It should: run every command in the table above;
-   verify AGENTS.md compliance (no network in any test path, no secrets, no personal details, JSON only
-   through `atomic-write.js`, no test registration); and run mutation tests against a *copy* of the
-   package — at minimum: make `findAnnounced()` fall back to the effective date; make `visibleAsOf()`
-   filter on `effective`; flip its `sameDay` default to `include`; add a scalar `date` field in
-   `makeRow()`; make `effectiveOn()` default its `asOf`; make `knownAt()` return the effective date;
-   make `normalizeIndex()` accept "S&P 500 ESG"; make a mismatched table row skip silently; give the
-   fetch layer a default fetcher; make an empty page read as zero changes; change a staged file without
-   updating its sha256 in `lib.cjs`; put the fetch time in the fingerprint; make `parseDateLoose()`
-   accept `22/09/2026` as 22 September. Every MISSED mutation is a missing check, and the fix is to add
-   the check — never to loosen the code to match.
-2. **Look at a real saved copy of each of the two `DEFAULT_SOURCES` pages** (the S&P Dow Jones Indices
-   announcement listing and Nasdaq's index news) and run `--dir <that copy> --dry`. The fixtures are
-   fictional and faithful to the *shapes* these releases use, but a real page's layout is the one thing
-   a fixture cannot promise. Read the refusals: a shape the rules do not cover shows up there, or as a
-   row that is simply absent. This is the single biggest open risk in the package.
-3. **Decide the two known gaps** (both stated above under "what this does not do") — a replace sentence
-   with no ticker in parentheses produces no row *and no refusal count*, because the rule never matched
-   it; and a section that inherits the release's effective date is flagged
-   (`effective-from-release-default`) but not otherwise questioned. Both are deliberate; whether either
-   needs a rule depends on step 2.
-4. **Only then** `deploy.cjs --apply` at home, then `record.cjs --dry`, then `record.cjs`.
-5. Not in scope here and not started: any scheduled collection, any reconciliation against constituent
-   lists or price series, and any registered test that reads these rows.
+1. **The missing fixture for the leak.** A page stating an effective date **in prose**, with no dateline
+   and no labelled field, plus a check asserting `findAnnounced()` is `null`, `rows.length === 0` and
+   `skipped[0].reason === "no-announcement-date"`. Then re-run the mutation and confirm it now fails.
+2. **Two guards that fire zero times on the fixtures**, each removable without any check noticing: the
+   weekday/month-as-city guard (`index-changes.js:376` — removing it reads
+   `"Tuesday, September 22, 2026: …"` as a dateline, the same leak) and `not-requested-index`
+   (`:294` — `collectRun` narrows whole sources upstream, so the row-level refusal is never exercised).
+   The claim above that both datelines traps have fixtures is **false** for the weekday one; fix the
+   fixture, not the sentence.
+3. **The write-path guard is untested.** Deleting `if (!run.audit.ok) … return 2`
+   (`index-change-collector.js:405`) passes 115/115: every section-F check is `--dry` or calls
+   `collectRun` directly. Same for `auditSeparation`'s `announced.basis` check (`:789`).
+4. **`selftest.cjs` dies instead of naming the failing check** in three mutation classes — `:188`
+   (`phix.knownAt.iso` when `knownAt` is null), `:196` (`E.skipped[0]` when empty), `:310-312` (reads a
+   file a refused `writeUnit` never wrote). The deploy gate still holds, but the `checks` array prints
+   at `:349`, after the throw, so the operator gets a stack trace and no diagnosis. Worst case: the
+   "this package was edited since review" check at `:299` is computed and never shown.
+5. **`parse.line` is wrong on every row.** `parsePage` dewraps first and the line-based rules number the
+   *dewrapped* lines (`index-changes.js:654-655`, used at `:477`, `:538`, `:569`, `:593`); on the S&P
+   table fixture dewrap collapses 27 lines to 21, so every row is off by two and LMEX's `parse.line`
+   points at the header row. This is the field that tells the operator where a row came from, and
+   step 7 below asks them to check exactly that by hand. The one check that touches it
+   (`selftest.cjs:131`) bakes the wrong numbering in.
+6. **An ambiguous or impossible date in an Effective Date column is dropped silently** and mislabelled:
+   `22/09/2026` and `February 30, 2026` give `effective.iso: null`, `qualifier: "no-date-in-text"`, no
+   `skipped` entry, no problem, exit 0 (`index-changes.js:214-223`, `:466-467`). The qualifier asserts
+   the cell held no date, which is false, and "all counted, never silent" above is false for this case.
+   A source switching to d/m/Y would produce 100 % undated rows and exit 0. Count it, or delete the
+   claim.
+7. **A real saved copy of each of the two `DEFAULT_SOURCES` pages** through `--dir <copy> --dry`, reading
+   the refusals. Still the biggest open risk, and now with a measured hazard: **`dewrap` is O(n²)** —
+   23 s on an 860 KB saved page, 2.5 s on 280 KB (`index-changes.js:624-634` re-runs `prose(prev)` over
+   the growing accumulated line). A large provider listing will look like a hang. No regex backtracking
+   cliff was found; the bounded lazy quantifiers hold.
+8. **Pin `fingerprint()`'s components with a check** — dropping `announced` from it passes 115/115
+   (`index-changes.js:266-269`), which would fold two announcements of the same event into one row and
+   destroy the "last announced" semantics `latestByKey` and `planKnownAsOf` are built on.
+9. **Dead vocabulary, dead code, and documentation that disagrees with itself.** `"no-company"`
+   (`:81`) is never produced; `"other"` (`:80`) is never returned and is missing from the reason list
+   above; `EFFECTIVE_TIMINGS`, `SKIP_REASONS` and `RULES` are exported but validate nothing;
+   `run.pagesPath ||` (`index-change-collector.js:408`) is permanently `undefined`; "Four mechanics"
+   (`index-changes.js:28`) vs "Five mechanics" above; "four package scripts" vs "5 package scripts"
+   above — there are five; `--plan` exits 1 for what `--apply` calls exit 2 in both `deploy.cjs` and
+   `rollback.cjs`, against their own documented codes; a zero-byte JSONL can be written and then
+   audited clean (`:407`); and `--dir` outside the repo prints a `../../../..` path.
+10. **Only then** `deploy.cjs --apply` at home, then `record.cjs --dry`, then `record.cjs`.
+11. Not in scope here and not started: any scheduled collection, any reconciliation against constituent
+    lists or price series, and any registered test that reads these rows.
+
+Every item above is a check to **ADD** or a defect to fix. None of them is a reason to loosen the code
+to match a test, and no existing check may be removed or weakened: the floor stays **115** for
+`selftest.cjs` and **23** for the collector's `--selftest`.
+
+### The two gaps that were deliberate, and remain open
+
+A replace sentence with no ticker in parentheses produces no row *and no refusal count*, because the
+rule never matched it. A section that inherits the release's effective date is flagged
+(`effective-from-release-default`) but not otherwise questioned. Whether either needs a rule depends on
+step 7.
