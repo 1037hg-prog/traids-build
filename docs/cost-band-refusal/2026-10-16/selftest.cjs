@@ -13,7 +13,8 @@ const P = require("./pkg.cjs"), R = require("./record.cjs");
 
 let n = 0; const fails = [];
 const ok = (name, cond, detail) => { n++; if (!cond) fails.push(name + (detail ? ` — ${detail}` : "")); console.log(`${cond ? "PASS" : "FAIL"}  ${name}`); };
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "cost-band-st-"));
+const temps = [], tmp = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "cost-band-st-")); temps.push(d); return d; };
+const mt = (iso) => Date.parse(iso + "-06:00");   // an MT wall-clock time in October / November 2026 (MDT -6 until 11-01, then MST -7: see THANKS)
 const ON = { exists: () => false }, OFF = { exists: () => true };
 const tk = (bps, extra = {}) => ({ id: "fx-1", cls: "Equity", sym: "FAKE", dir: 1, entry: 50, stop: 48, stopDist: 2, addedAt: 1, strategy: "Ensemble", obs: bps === undefined ? {} : { spreadBps: bps, clientStamp: "kept" }, ...extra });
 // a 13:00 MT Saturday and a 10:00 / 14:00 MT Wednesday (2026-10-17 is a Saturday; 2026-10-14 a Wednesday). MT is UTC-6 in October.
@@ -28,12 +29,13 @@ ok("100 bps is refused (upper edge inclusive; R49 refuses only > 100)", verdict(
 ok("100.01 bps is NOT this gate's (R49's)", verdict(100.01) === null);
 ok("no stamp passes (the STAMP gate owns it)", verdict(undefined) === null && G.evaluate({ ...tk(50), obs: undefined }, ON) === null);
 ok("a non-number stamp passes", verdict("50") === null && verdict(NaN) === null && verdict(Infinity) === null && verdict(null) === null);
+ok("the why rounds the spread to one decimal", /42\.5 bps/.test(verdict(42.46).why), verdict(42.46).why);
 ok("the why names the spread and the switch", /50 bps .*30-100 bps.*cost-band-OFF/.test(verdict(50).why), verdict(50).why);
 
 // ---- 2. scope ---------------------------------------------------------------------------------------------------------------
 for (const cls of ["Crypto", "FX", "Futures", "Options"]) ok(`${cls} at 50 bps passes`, verdict(50, { cls }) === null);
 ok("a control twin passes", verdict(50, { ctrl: true }) === null && verdict(50, { ctrlRand: true }) === null);
-ok("an existing veto shadow passes", verdict(50, { vetoShadow: true, ctrl: true }) === null);
+ok("an existing veto shadow passes", verdict(50, { vetoShadow: true, ctrl: true }) === null && verdict(50, { vetoShadow: true }) === null);
 ok("a sleeve ticket passes", verdict(50, { sleeve: "r316" }) === null);
 ok("null / undefined ticket passes", G.evaluate(null, ON) === null && G.evaluate(undefined, ON) === null);
 
@@ -91,6 +93,12 @@ ok("the default OFF path is backend/data/cost-band-OFF beside the installed lib"
   fs.writeFileSync(live, fs.readFileSync(path.join(PKG, "staged", rel)));
   ok("rollback inside the fence is refused", P.run({ mode: "rollback", root, nowMs: WED10, log: quiet }) === 2 && fs.existsSync(live));
   ok("rollback restores base: the new file is removed", P.run({ mode: "rollback", root, nowMs: SAT, log: quiet }) === 0 && !fs.existsSync(live) && P.stateOf(rel, root).state === "base");
+  // fence edges (Wed 2026-10-14) and a holiday (Thanksgiving 2026-11-26, MST = UTC-7)
+  ok("fence: 05:29 MT allowed, 05:30 refused, 15:59 refused, 16:00 allowed", P.fence(mt("2026-10-14T05:29:00"), root) === null && P.fence(mt("2026-10-14T05:30:00"), root) !== null && P.fence(mt("2026-10-14T15:59:00"), root) !== null && P.fence(mt("2026-10-14T16:00:00"), root) === null);
+  ok("fence: a market holiday at 10:00 MT is allowed; the weekday after is not", P.fence(Date.parse("2026-11-26T10:00:00-07:00"), root) === null && P.fence(Date.parse("2026-11-27T10:00:00-07:00"), root) !== null);
+  ok("fence: Saturday and Sunday allowed", P.fence(mt("2026-10-17T10:00:00"), root) === null && P.fence(mt("2026-10-18T10:00:00"), root) === null);
+  ok("a failed check after the write puts the file back (exit 1, absent again)", P.run({ mode: "apply", root, nowMs: SAT, log: quiet, checkImpl: () => "fake syntax error" }) === 1 && !fs.existsSync(live) && P.stateOf(rel, root).state === "base");
+  ok("the real node --check runs on apply (a broken staged copy would fail)", P.run({ mode: "apply", root, nowMs: SAT, log: quiet }) === 0 && P.run({ mode: "rollback", root, nowMs: SAT, log: quiet }) === 0 && !fs.existsSync(live));
   ok("the live repo itself is untouched by the selftest", !fs.existsSync(path.join(REPO, rel)));
 }
 
@@ -98,13 +106,18 @@ ok("the default OFF path is backend/data/cost-band-OFF beside the installed lib"
 {
   const root = tmp(), data = path.join(root, "backend", "data"), cr = path.join(data, "change-registry.json"), out = [];
   fs.mkdirSync(path.join(root, "backend", "lib"), { recursive: true }); fs.mkdirSync(data, { recursive: true });
-  for (const f of ["run-window.js", "atomic-write.js"]) fs.copyFileSync(path.join(REPO, "backend", "lib", f), path.join(root, "backend", "lib", f));
-  fs.writeFileSync(cr, JSON.stringify([{ id: "older-row", date: "2026-10-01" }]));
+  fs.copyFileSync(path.join(REPO, "backend", "lib", "run-window.js"), path.join(root, "backend", "lib", "run-window.js"));
+  // atomic-write in the temp root: the real one, wrapped so the selftest can see that record.cjs used it
+  fs.copyFileSync(path.join(REPO, "backend", "lib", "atomic-write.js"), path.join(root, "backend", "lib", "atomic-write-real.js"));
+  fs.writeFileSync(path.join(root, "backend", "lib", "atomic-write.js"), 'const R = require("./atomic-write-real.js"); module.exports = { ...R, writeJsonAtomic: (f, o, x) => { (globalThis.__CB_ATOMIC ||= []).push(f); return R.writeJsonAtomic(f, o, x); } };\n');
+  loadCjs(path.join(REPO, "backend", "lib", "atomic-write.js")).writeJsonAtomic(cr, [{ id: "older-row", date: "2026-10-01" }]);
   const log = (s) => out.push(String(s)), rc = (argv, nowMs = SAT, o = {}) => R.main(argv, { root, nowMs, log, lockWaitMs: 1, lockTries: 2, ...o });
   ok("--dry prints the row and writes nothing", rc(["--dry"]) === 0 && /breaksComparability": true/.test(out.join("\n")) && JSON.parse(fs.readFileSync(cr, "utf8")).length === 1);
   ok("--apply without --restarted is refused", rc(["--apply"]) === 2);
   ok("--restarted must be a real date", rc(["--restarted", "2026-02-30", "--apply"]) === 2 && rc(["--restarted", "10/19/2026", "--dry"]) === 2);
   ok("--apply inside 13:50-15:50 MT on a trading day is refused", rc(["--restarted", "2026-10-14", "--apply"], WED14) === 2 && JSON.parse(fs.readFileSync(cr, "utf8")).length === 1);
+  ok("window edges: 13:49 and 15:50 MT pass the window check, 13:50 and 15:49 refuse", rc(["--restarted", "2026-10-21", "--apply"], mt("2026-10-14T13:50:00")) === 2 && rc(["--restarted", "2026-10-21", "--apply"], mt("2026-10-14T15:49:00")) === 2 && /in the future|after today/.test((out.length = 0, rc(["--restarted", "2026-10-21", "--apply"], mt("2026-10-14T13:49:00")), out.join(" "))) && /after today/.test((out.length = 0, rc(["--restarted", "2026-10-21", "--apply"], mt("2026-10-14T15:50:00")), out.join(" "))));
+  ok("a market holiday at 14:00 MT is outside the window", /after today/.test((out.length = 0, rc(["--restarted", "2026-12-01", "--apply"], Date.parse("2026-11-26T14:00:00-07:00")), out.join(" "))));
   ok("--restarted in the future is refused", rc(["--restarted", "2026-10-20", "--apply"]) === 2);
   fs.writeFileSync(path.join(data, "registry-write.lock"), "{}");
   ok("a held registry lock refuses and is left in place", rc(["--restarted", "2026-10-16", "--apply"]) === 2 && fs.existsSync(path.join(data, "registry-write.lock")));
@@ -112,6 +125,7 @@ ok("the default OFF path is backend/data/cost-band-OFF beside the installed lib"
   ok("--apply outside the window appends one row", rc(["--restarted", "2026-10-14", "--apply"], WED17) === 0);
   const c1 = JSON.parse(fs.readFileSync(cr, "utf8"));
   ok("the row: id, dates, breaksComparability, no test id", c1.length === 2 && c1[0].id === "older-row" && c1[1].id === "cost-band-refusal-2026-10-14" && c1[1].date === "2026-10-14" && c1[1].affectedFrom === "2026-10-14" && c1[1].breaksComparability === true && !/"testId"|"R\d+":/.test(JSON.stringify(c1[1])));
+  ok("the row was written through atomic-write", (globalThis.__CB_ATOMIC || []).length === 1 && globalThis.__CB_ATOMIC[0] === cr);
   ok("a second --apply adds nothing", rc(["--restarted", "2026-10-17", "--apply"]) === 0 && JSON.parse(fs.readFileSync(cr, "utf8")).length === 2);
   ok("the lock is released", !fs.existsSync(path.join(data, "registry-write.lock")));
   ok("test-registry.json is never written", !fs.existsSync(path.join(data, "test-registry.json")));
@@ -122,5 +136,6 @@ ok("base/ marks the gate file as absent", fs.existsSync(path.join(PKG, "base", "
 ok("the live repo has no cost-band-gate.js yet (nothing was applied here)", !fs.existsSync(path.join(REPO, "backend", "lib", "cost-band-gate.js")));
 ok("the gate makes no network or broker call", !/require\(["'](https?|net|tls|dns|child_process)["']\)|fetch\(|alpaca|broker/i.test(fs.readFileSync(path.join(PKG, "staged", "backend", "lib", "cost-band-gate.js"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "")));
 
+for (const d of temps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
 if (fails.length) { console.log(`\nSELFTEST FAILED: ${fails.length} of ${n}\n  ` + fails.join("\n  ")); process.exit(1); }
 console.log(`\nSELFTEST PASSED (${n} checks)`);

@@ -5,7 +5,7 @@
  *   node docs/cost-band-refusal/2026-10-16/rollback.cjs --plan       read-only
  *   node docs/cost-band-refusal/2026-10-16/rollback.cjs --rollback   restores base/; refuses on drift or inside the fence
  *
- * Undo the two wiring edits (NOTES.md) FIRST, or the board server will fail to load the gate at its next restart.
+ * Undo the wiring edit in the board server (NOTES.md) FIRST, or the board server will fail to load the gate at its next restart.
  * The quicker off switch needs no rollback: create backend/data/cost-band-OFF.
  */
 "use strict";

@@ -45,8 +45,8 @@ function writeBytes(file, buf) {
 }
 const nodeCheck = (file) => { if (!/\.(c|m)?js$/.test(file)) return null; try { execFileSync(process.execPath, ["--check", file], { stdio: "pipe" }); return null; } catch (e) { return String(e.stderr || e.message).split("\n").slice(0, 3).join(" "); } };
 
-/** run({ mode: "plan"|"apply"|"rollback-plan"|"rollback", root, nowMs, log }) -> exit code. The two plans write nothing. */
-function run({ mode, root = REPO, nowMs = Date.now(), log = console.log } = {}) {
+/** run({ mode: "plan"|"apply"|"rollback-plan"|"rollback", root, nowMs, log, checkImpl }) -> exit code. The two plans write nothing. */
+function run({ mode, root = REPO, nowMs = Date.now(), log = console.log, checkImpl = nodeCheck } = {}) {
   const rows = FILES.map((rel) => ({ rel, ...stateOf(rel, root) }));
   for (const r of rows) log(`  ${r.state.padEnd(8)} ${r.rel}${r.why ? " — " + r.why : ""}${r.base === null ? " (new file; base is absent)" : ""}`);
   const drift = rows.filter((r) => r.state === "drift");
@@ -70,7 +70,7 @@ function run({ mode, root = REPO, nowMs = Date.now(), log = console.log } = {}) 
       done.push(r);
       const back = readOrNull(target);
       if (want === null ? back !== null : !(back && back.equals(want))) throw new Error(`read-back of ${r.rel} differs`);
-      const bad = want === null ? null : nodeCheck(target); if (bad) throw new Error(`node --check ${r.rel}: ${bad}`);
+      const bad = want === null ? null : checkImpl(target); if (bad) throw new Error(`node --check ${r.rel}: ${bad}`);
       log(`  ${mode === "apply" ? "wrote  " : "restored"} ${r.rel}${want === null ? " (removed: base is absent)" : ` sha ${sha(want).slice(0, 12)}`}`);
     }
   } catch (e) {

@@ -6,8 +6,8 @@
  *   node docs/cost-band-refusal/2026-10-16/deploy.cjs --apply    writes staged/ over base; refuses on drift or inside the fence
  *
  * Refuses (exit 2, nothing changed) when any live file matches neither base/ nor staged/, or on a trading weekday 05:30-16:00 MT.
- * It restarts nothing: the gate is loaded by the board server at the operator's next restart, and only once the two wiring
- * edits in NOTES.md are made (lib/enforcement-gates.js and the board POST are not in the cloud copy).
+ * It restarts nothing: the gate is loaded by the board server at the operator's next restart, and only once the wiring
+ * edit in NOTES.md is made in the board POST handler (the board server is not in the cloud copy).
  */
 "use strict";
 const P = require("./pkg.cjs");

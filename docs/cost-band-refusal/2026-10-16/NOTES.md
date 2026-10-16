@@ -15,7 +15,7 @@ New board stock tickets whose predicted round-trip cost (the stamped spread `obs
 | `deploy.cjs --plan / --apply` | writes staged over base. Refuses if anything has drifted (a live file matches neither base nor staged). Also refuses on a trading weekday between 05:30 and 16:00 MT. |
 | `rollback.cjs --plan / --rollback` | puts base back byte for byte, which here means removing the new file. Same refusals as deploy. |
 | `record.cjs --dry` / `--restarted YYYY-MM-DD --apply` | one change-registry row, `breaksComparability: true`, dated at the restart. Refuses between 13:50 and 15:50 MT on trading days, and when the registry lock is held. Never adds the same row twice. |
-| `selftest.cjs` | 60 checks on temp fixtures. Ends `SELFTEST PASSED (60 checks)`. |
+| `selftest.cjs` | 69 checks on temp fixtures. Ends `SELFTEST PASSED (69 checks)`. |
 | `pkg.cjs`, `files.cjs`, `loadcjs.cjs` | shared machinery for the scripts above |
 
 ### Rules the gate applies
@@ -23,6 +23,8 @@ New board stock tickets whose predicted round-trip cost (the stamped spread `obs
 - **Band:** 30 ≤ spreadBps ≤ 100, inclusive at both ends. At 100.01 the ticket is R49's to refuse, not this gate's.
 - **In scope:** `cls === "Equity"` only. Controls (`ctrl`, `ctrlRand`), existing veto shadows and sleeve tickets (`sleeve` set) are out of scope.
   - Sleeve tickets are excluded on purpose, so that no sleeve's registered population moves. The operator's words were "board stock tickets". If sleeve stock tickets should be refused too, say so and this becomes a one-line change.
+  - **Confirm at home:** sleeve rows are detected by `ticket.sleeve`. The same test is used by verify-live.cjs and pm-factor-hedge.js. r67 uses `RP.isSleeve(t)` from lib/risk-policy.js, which is not in this copy. If `isSleeve` covers more than `!!t.sleeve`, change `inScope` to match it.
+  - **Manual Terminal tickets ARE in scope.** These are `strategy:"Terminal", manual:true` equity tickets. They are board stock tickets, so they are refused at 30–100 bps like any other. Excluding them is a one-line change (`&& !t.manual`) if the operator wants that.
 - **No usable stamp:** the ticket passes this gate. The STAMP gate owns that case.
 - **Shadow:** `{...ticket, ctrl:true, vetoShadow:true, veto:"COSTBAND spread 30-100bps", vetoWhy, vetoAt, costBand:{loBps:30, hiBps:100, spreadBps}}`.
   - The veto string matches none of `/R49/`, `/R53/`, `/R28/` or STAMP. No registered reader counts it as its own shadow.
@@ -37,20 +39,25 @@ These files do not exist in this copy, so they were **not reconstructed**:
 - `backend/traids-server-v2.js`: the board server, where the `POST /api/board-positions` entry handler turns a gate veto into a shadow row.
 - `backend/lib/risk-policy.js` and `backend/lib/cost-size.js`, which the handler uses.
 
-Until the two wiring edits below are made at home, deploying this package installs a module that **nothing calls**. It is inert.
+Until the wiring edit below is made at home, deploying this package installs a module that **nothing calls**. It is inert.
 
-### The two wiring edits owed at home
+### The wiring edit owed at home (one place: the board POST handler)
 
-1. **In `lib/enforcement-gates.js` `evaluateGates(ticket, live, now)`:** after every registered gate (R49, R53, STAMP) has returned no veto for the ticket, and only then, return the cost-band verdict:
-   ```js
-   const CB = require("./cost-band-gate.js");          // top of file
-   // ... at the end of evaluateGates, where it would return null:
-   return CB.evaluate(ticket);                          // null, or { test:"COSTBAND", veto, why }
-   ```
-   This order keeps every R49, R53 and STAMP refusal exactly as it is today.
-2. **In the board POST handler:** a `COSTBAND` verdict must be turned into a shadow in the same way the handler already turns R49's verdict into one: same ledger, same `vetoAt`, same era and scanner stamp. If the handler turns vetoes into shadows generically by `veto` and `why`, nothing else is needed. If it does not, use `CB.toShadow(ticket, verdict, now)`. The dry-run path (`?dryRun=1`, `gateVetoes`) should list it as `test:"COSTBAND"`.
+**Do not put the band inside `lib/enforcement-gates.js` `evaluateGates()`.** The home verifier `docs/profit-fixes/2026-10-12/a-booking/verify-live.cjs` checks at lines 104 and 109 that `evaluateGates()` lets a 99 bps ticket through (it returns `null`). With the band inside `evaluateGates()`, that check would read FAIL. So `enforcement-gates.js` stays untouched, and the band is asked by the caller, next to it.
 
-Order of work at home: make the two edits, then run `node --check` on both files, then `deploy.cjs --plan`, then `deploy.cjs --apply`. Restart the board server outside 06:45–14:15 MT. Then run `record.cjs --restarted <restart date> --dry`, and the same command with `--apply` after 15:50 MT.
+In the `POST /api/board-positions` handler, at the point where it calls `evaluateGates(ticket, live, now)` for each ticket:
+
+```js
+const CB = require("./lib/cost-band-gate.js");                    // top of the server file
+// ...
+const v = EG.evaluateGates(ticket, live, now) || CB.evaluate(ticket);   // the registered gates first; the band only when they all pass
+```
+
+- A `COSTBAND` verdict must become a shadow in the same way the handler already turns R49's verdict into one: same ledger, same `vetoAt`, same era and scanner stamp. If the handler builds its shadows generically from `veto` and `why`, nothing else is needed. If it does not, use `CB.toShadow(ticket, v, now)`.
+- The dry-run path (`?dryRun=1`, `gateVetoes`) should list it as `test:"COSTBAND"`.
+- If the handler calls `evaluateGates` in more than one place, for example once for the dry run and once for the real write, use the same `||` at each call.
+
+Order of work at home: make the edit, then run `node --check` on the server file, then `deploy.cjs --plan`, then `deploy.cjs --apply`. Restart the board server outside 06:45–14:15 MT. Then run `record.cjs --restarted <restart date> --dry`, and the same command with `--apply` after 15:50 MT.
 
 ## Registered tests — operator decision needed BEFORE --apply
 
@@ -73,6 +80,6 @@ The root `package.json` here is `"type": "module"` and there is no `backend/pack
 
 ## Checks run here
 
-- `node docs/cost-band-refusal/2026-10-16/selftest.cjs` → `SELFTEST PASSED (60 checks)`
+- `node docs/cost-band-refusal/2026-10-16/selftest.cjs` → `SELFTEST PASSED (69 checks)`
 - `node --check` on every script in the package
 - `deploy.cjs --plan` → `base backend/lib/cost-band-gate.js (new file; base is absent)`
