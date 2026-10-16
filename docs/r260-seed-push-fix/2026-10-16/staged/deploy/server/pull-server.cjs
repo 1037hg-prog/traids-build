@@ -396,7 +396,8 @@ const SCRIPT_MAX = 5000;   // well under the ~8,190 characters at which a script
  */
 function chunkByScript(items, build, max = SCRIPT_MAX) {
   if (!items.length) return [];
-  const base = build([]).length, cost = items.map((it) => build([it]).length - base), runs = []; let cur = [], len = base;
+  // an item's share: build([it, it]) - build([it]) (it includes any separator between items); the exact re-measure below stays the judge
+  const base = build([]).length, cost = items.map((it) => build([it, it]).length - build([it]).length), runs = []; let cur = [], len = base;
   items.forEach((it, i) => { if (cur.length && len + cost[i] > max) { runs.push(cur); cur = []; len = base; } cur.push(it); len += cost[i]; });
   if (cur.length) runs.push(cur);
   const out = [], fit = (run) => { if (run.length > 1 && build(run).length > max) { const h = Math.ceil(run.length / 2); fit(run.slice(0, h)); fit(run.slice(h)); } else out.push(run); };
@@ -421,7 +422,8 @@ function pushChunked(ssh, remoteData, files, { lock = null, lockWait = 60, max =
     let r; try { r = pushRemote(ssh, remoteData, part, { lock, lockWait }); }
     catch (e) { throw new Error(`${e.message} (chunk ${chunks + 1} of ${parts.length}; ${pushed} file(s) landed and were verified before it)`); }
     if (r.busy) return { busy: true, pushed, partial: pushed > 0, chunks };
-    const after = remoteShasChunked(ssh, remoteData, part.map((f) => f.rel), { max });
+    let after; try { after = remoteShasChunked(ssh, remoteData, part.map((f) => f.rel), { max }); }
+    catch (e) { throw new Error(`${e.message} (reading back chunk ${chunks + 1} of ${parts.length}; ${pushed} file(s) landed and were verified before it)`); }
     for (const f of part) if (after.get(f.rel) !== sha(f.data)) throw new Error(`push to ${remoteData}: ${f.rel} is not what was sent (chunk ${chunks + 1} of ${parts.length}; ${pushed} file(s) landed before it) — nothing more sent`);
     pushed += r.pushed; chunks++;
   }

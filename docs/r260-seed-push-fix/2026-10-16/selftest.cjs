@@ -75,7 +75,7 @@ section("the fix — pushChunked / remoteShasChunked (STAGED pull-server)", () =
   ok("the unit's lock busy at chunk 2: { busy, partial } returned, the first chunk landed and was verified, NOTHING after chunk 2 was sent", rb.busy === true && rb.partial === true && rb.pushed === firstChunk.length && landed(SEED) === firstChunk.length && VB.S.calls.filter((c) => /EOF_MV/.test(c)).length === 2, JSON.stringify(rb));
   // a chunk that does not land as sent
   fresh();
-  const VC = fakeSsh({ afterPush: (k) => { if (k === 2) { const f = path.join(LOCAL, PS.chunkByScript(SEED, (run) => PS.remotePushCommand(RD, run, { lock: "w3-r260.flock", lockWait: 60 }))[1][0].rel); fs.appendFileSync(f, "// altered on the VPS\n"); } } });
+  const VC = fakeSsh({ afterPush: (k) => { if (k === 2) { const f = path.join(LOCAL, PS.chunkByScript(SEED, (run) => PS.remotePushCommand(RD, run, { lock: "w3-r260.flock", lockWait: 60 }))[1].slice(-1)[0].rel); fs.appendFileSync(f, "// altered on the VPS\n"); } } });
   let ec = null; try { PS.pushChunked(VC.fn, RD, SEED, { lock: "w3-r260.flock" }); } catch (x) { ec = x.message; }
   ok("chunk 2 read back NOT as sent: THROWS naming the file and the chunk; chunk 3 is never sent", /is not what was sent \(chunk 2 of \d+/.test(ec || "") && VC.S.calls.filter((c) => /EOF_MV/.test(c)).length === 2, ec);
   // ssh down
@@ -91,6 +91,12 @@ section("the fix — pushChunked / remoteShasChunked (STAGED pull-server)", () =
   let ef = null; try { PS.pushChunked(failAt2, RD, SEED, { lock: "w3-r260.flock" }); } catch (x) { ef = x.message; }
   ok("ssh fails at chunk 2: THROWS naming chunk 2 and the files that landed before it", /chunk 2 of \d+; \d+ file\(s\) landed and were verified before it/.test(ef || "") && !/; 0 file/.test(ef || ""), ef);
   ok("chunkByScript is linear and exact: 2,000 names chunked with build() called O(n) times, every run within the limit", (() => { let calls = 0; const names = Array.from({ length: 2000 }, (_, i) => "n" + i); const b = (r) => { calls++; return PS.remoteShasCommand(RD, r); }; const ch = PS.chunkByScript(names, b); return calls < 3 * names.length && ch.flat().join() === names.join() && ch.every((c) => PS.remoteShasCommand(RD, c).length <= PS.SCRIPT_MAX); })());
+  // a read-back that fails over ssh says which chunk and how many landed (review cycle 2)
+  fresh();
+  let nr = 0; const VG = fakeSsh(), failRead2 = (script, o) => (/sha256sum -- "\$f"/.test(script) && ++nr === 2 ? { ok: false, status: 255, out: "", err: "Connection reset" } : VG.fn(script, o));
+  let eg = null; try { PS.pushChunked(failRead2, RD, SEED, { lock: "w3-r260.flock" }); } catch (x) { eg = x.message; }
+  ok("the read-back of chunk 2 fails over ssh: THROWS naming chunk 2 and the files verified before it", /reading back chunk 2 of \d+; \d+ file\(s\) landed/.test(eg || "") && !/; 0 file/.test(eg || ""), eg);
+  ok("sha-read chunks are filled close to the limit (each but the last over 4,000 of 5,000 characters): no needless ssh calls", (() => { const names = Array.from({ length: 600 }, (_, i) => `r260-cache/SYM${String(i).padStart(3, "0")}-daily-2026-10-15.json`), ch = PS.chunkByScript(names, (r) => PS.remoteShasCommand(RD, r)); return ch.slice(0, -1).every((c) => PS.remoteShasCommand(RD, c).length > 4000 && PS.remoteShasCommand(RD, c).length <= 5000); })());
   // empty and small lists
   const VE = fakeSsh(), re = PS.pushChunked(VE.fn, RD, [], {});
   ok("an empty list: { pushed: 0 }, no ssh at all", re.pushed === 0 && VE.S.calls.length === 0);
