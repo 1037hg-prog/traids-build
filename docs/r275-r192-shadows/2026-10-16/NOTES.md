@@ -172,6 +172,70 @@ removed. No file outside this package was touched.
 * R192's forward months are few by construction (one a month), so its t will be noisy for a long time. The registry's
   audit note still applies: a pass here would confirm R180's robustness, not add an independent edge.
 
+## HANDOVER
+
+Handed over on 2026-10-16 at the operator's instruction, mid-loop. **The package is complete and its selftest
+passes; the independent check had been started and was NOT finished, so the build-check loop ran zero completed
+cycles.** Everything below is stated as it actually stands.
+
+### Done
+
+1. `staged/backend/lib/shadow-ledger.js` — the append-only record both shadows write through.
+2. `staged/backend/r275-release-shadow.js` — R275's release-day filter, forward, over the two live short-premium
+   sleeves. Rule text taken from the sealed read (R275's registry entry is redacted here — see
+   "The one thing to check first" above).
+3. `staged/backend/r192-month-end-shadow.js` — R192's month-end rule, forward, on AGG/LQD/MUB with HYG as the
+   contrast; bar read from the registry at run time.
+4. `deploy.cjs --plan|--apply` (all three files new, `base` = absent, DRIFT refused, selftest gate, clock and
+   close-chain fences), `rollback.cjs --plan|--apply` (removes the three files, keeps the records, refuses while the
+   chain still names a runner), `record.cjs --dry` (one change-registry row + one GOVERNANCE line), `NOTES.md`,
+   `base/README.md`.
+5. Committed and pushed to `claude/r275-r192-shadows` (and `claude/r275-r192-shadows-uv1k97`).
+
+### Checks that pass, as run in this session
+
+* `node docs/r275-r192-shadows/2026-10-16/selftest.cjs` → **ALL 52 CHECKS PASSED**, exit 0. Fixtures only: no
+  network (a `fetch` during a run throws), no broker, no clock of its own, nothing written outside its own scratch
+  directory. Breakdown in "How it was proven" above.
+* `node --check` clean on all seven .cjs/.js files of the package.
+* `deploy.cjs --plan`, `rollback.cjs --plan` — read-only, correct output; both report the write mode would be
+  REFUSED right now by the 05:30–16:00 MT trading-day clock fence, which is the intended behaviour.
+* `record.cjs --dry` — refuses in this clean copy because `backend/data/change-registry.json` is not here (no data
+  in this tree). That is expected; it must be re-run at home.
+* **No existing test, rule, bar, population or read condition was changed, weakened, skipped or removed, and no
+  test disappeared.** No file outside this package was touched.
+
+### Left to do, in order
+
+1. **Finish the independent check.** A checker agent was started on commit `6ae8cf4` to re-run every check
+   read-only and to attempt 15 mutation tests (the exposure rule's `>`/`>=` and `<=`/`<` boundaries, the 2 bps cost,
+   `lastStart`, the >= 15 month filter, the placebo seed, the `5 * mean(o)` drift term, de-duplication and the
+   non-JSON throw in the ledger, backfilling past `evidenceStart` in both shadows, an injected order call, a write
+   outside the record, the Welch statistic, and dropping a selftest check to see the count shrink). **Its results
+   never arrived in this session, so no mutation was confirmed caught by an independent party.** Re-run it, or run
+   those mutations by hand, before trusting the selftest's coverage.
+2. **Verify R275's rule against the full registry entry at home** — "The one thing to check first" above. If the
+   registry differs from `backend/r275-release-filter.js`, the shadow is recording the wrong rule: rebuild it from
+   the registry, and change nothing to make a number come out.
+3. `node docs/r275-r192-shadows/2026-10-16/selftest.cjs` at home (it needs only this repo's own files).
+4. `deploy.cjs --plan`, then `deploy.cjs --apply` — after 16:00 MT, once the close chain has finished.
+5. **Wire the two runners into the nightly chain by hand** — see "Wiring" above. Until then the three files sit
+   there doing nothing and neither record gains a row.
+6. After the first night, confirm both JSONLs opened a `start` row and a `run` row, and that
+   `backend/r192-month-end-shadow.js --status` shows the session calendar was read (otherwise every session is
+   recorded as undecided, which is honest but useless).
+7. `record.cjs --dry`, then `record.cjs`.
+
+### Known gaps, stated rather than left to be found
+
+* The forward records are empty by construction until the runners are wired and start firing; nothing here is
+  evidence yet.
+* R275's `rMult`-as-R mapping and its `R25-0dte` / `R21-premium` population are the one forward adaptation of the
+  sealed read's archive population. It is argued in "The one forward adaptation" above and is worth a second
+  opinion at home, where the live sleeves can be inspected.
+* `record.cjs` has only ever been exercised in `--dry` against a scratch directory (check D10) and against this
+  data-free tree; its write path has not run anywhere.
+
 ## Commands
 
 ```
