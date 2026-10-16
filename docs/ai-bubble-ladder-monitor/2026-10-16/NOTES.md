@@ -253,8 +253,13 @@ the fixtures, never to a rule**:
 | One mutant was equivalent (it changed no behaviour). | Replaced with two that do: the B1 and B2 availability guards ignored. |
 | Four `kills` regexes named too narrow a check. | Widened to the checks that actually catch each one. |
 
-Cycles 2 and 3 (the second run of the loop, and the independent checker's re-run) found no survivor:
-**ALL 36 MUTANTS KILLED**, **ALL 467 CHECKS PASSED**.
+Cycle 2 (the builder's re-run of both checks after those fixes) found no survivor: **ALL 36 MUTANTS KILLED**,
+**ALL 467 CHECKS PASSED**.
+
+**Cycle 3 — the independent checker's run — did not report.** A separate read-only checker was started (every check
+command, the rules re-read against the cited lines of `docs/ai-bubble-2026-10/`, the hard rules of `AGENTS.md`, its own
+fresh mutations and its own crafted stores), but the session was handed over before its report arrived, so **nothing
+in this package has been confirmed by anyone but its builder**. See **HANDOVER** below.
 
 ### Test edits
 
@@ -309,3 +314,88 @@ Both files are removed, which is their base. It refuses the whole unit if either
 it does not recognise, and it has the same fences. It leaves `backend/data/ai-bubble-ladder-status.json` — the
 operator's own readings — where it is. If `record.cjs` has written its registry row, that row stays on record; it is
 undone by hand, not by this script.
+
+---
+
+## HANDOVER
+
+Handed over on 2026-10-16 on the operator's word ("stop now and hand over"), mid-loop: the builder finished two
+cycles, and the independent checker's run was cut off before it reported. Branch `claude/ai-bubble-ladder-monitor`.
+**Nothing here has been applied, scheduled or recorded, and nothing has been confirmed by anyone but the builder.**
+
+### Done
+
+1. **Read the ladder out of the code.** Both levels were taken from `docs/ai-bubble-2026-10/`, line by line, and
+   every rung carries its source line in the code and in every written status. B1 = the daily 200-day ±2% band
+   (`bust/triggers.js:51-57`, `plan-sizing.cjs:23-24`, `plan-review/precedent.cjs:9`) on QQQ, SPY, SMH. B2 = the
+   monthly 10-month flip (`bust/triggers.js:50`, `plan-review/flip-levels.cjs:1-15`) on QQQ, SPY and VWEHX/VFITX.
+2. **The monitor.** `staged/backend/ai-bubble-ladder.js` (the arithmetic; writes nothing) and
+   `staged/backend/ai-bubble-ladder-monitor.js` (the reading: a plain summary, and with `--write` the dated status
+   under its own date key through `writeJsonAtomic`). No order, no network, no broker, no account, no position; one
+   file written and only when asked.
+3. **The staged package.** `staged/`, an empty `base/` with the note saying why, `deploy.cjs --plan|--apply` with
+   sha256 pins and fences, `rollback.cjs --plan|--apply`, `record.cjs --dry`, `selftest.cjs`, `mutants.cjs`,
+   `fixtures/specs.cjs` + `make.cjs`, this `NOTES.md`.
+4. **Tests on synthetic closes**, including a crossing day and a no-crossing day for *each* rung and both exact
+   equality boundaries, with known answers twice over (hand-derived literals and an independent re-derivation of both
+   rules). Full table in *Known answers, two ways*.
+5. **Two build-check cycles** (cycle 1 found 9 live or wrongly-caught mutants; the fixes were to the selftest and the
+   fixtures, never to a rule — see the table in *The mutation check*).
+6. **No test edits.** Nothing was weakened, skipped or deleted; no registered test is touched; no test disappeared and
+   the count only grew (284 → 430 → 467).
+
+### Checks that pass, as run by the builder
+
+| command | verdict |
+|---|---|
+| `node docs/ai-bubble-ladder-monitor/2026-10-16/selftest.cjs` | `ALL 467 CHECKS PASSED` (exit 0) |
+| `node docs/ai-bubble-ladder-monitor/2026-10-16/mutants.cjs` | `ALL 36 MUTANTS KILLED` (exit 0, ~19 s) |
+| `node docs/ai-bubble-ladder-monitor/2026-10-16/deploy.cjs --plan` | exit 0; both files `absent`; fences clear |
+| `node docs/ai-bubble-ladder-monitor/2026-10-16/rollback.cjs --plan` | exit 0; nothing to remove |
+| `node docs/ai-bubble-ladder-monitor/2026-10-16/record.cjs --dry` | exit 0; "WOULD THE WRITE GO THROUGH? NO" — correct here (this copy holds no `backend/data`) |
+| `node --check` on every `.cjs` and both staged `.js` | clean |
+| usage paths of `deploy.cjs` / `rollback.cjs` / `record.cjs` with no or bad arguments | exit 2, nothing done |
+
+### Left to do, in order
+
+1. **Re-run the two checks, unchanged, to confirm this branch as pushed:**
+   `node docs/ai-bubble-ladder-monitor/2026-10-16/selftest.cjs` must end `ALL 467 CHECKS PASSED`, and
+   `node docs/ai-bubble-ladder-monitor/2026-10-16/mutants.cjs` must end `ALL 36 MUTANTS KILLED`.
+2. **Have an independent checker do cycle 3** — this is the step that was cut off, and it is the one thing the
+   package's own claims rest on that nobody but the builder has tested. It should, read-only: run every check command
+   above; re-read the cited lines of `docs/ai-bubble-2026-10/` and `backend/book-etf-rebalancer.js` and say, inequality
+   by inequality, whether the staged B1 and B2 arithmetic is the same rule (the band's first reading and both its
+   levels; whether the 10-month mean includes the current month-end; which comparisons are strict; whether the last
+   session can be a month-end; whether the adjusted close is the input); check the hard rules of `AGENTS.md`; try at
+   least ten mutations NOT in `mutants.cjs`'s list (the rounding `r4`/`r6`, `distanceToThresholdPct`, `runStart`,
+   `trimSeries` boundaries, the status's `date` choice, `mergeStatus`, the argument parser, `readSeries`' behaviour for
+   a row exactly ON the cut date, a zero or negative denominator in the ratio, a one-row series, a month with one
+   session, a December-to-January boundary, the exit codes) through
+   `AI_BUBBLE_LADDER_SELFTEST_STAGED=<a temp dir>`; and attack it with crafted stores rather than code edits (an empty
+   array, a non-array, string closes, a missing `d`, a leap day, a symbol that is a directory). Any mutation the
+   selftest does not catch is a hole in the selftest, not a reason to change a rule.
+3. **Confirm the `B1`/`B2` labels against the plan's own write-up**,
+   `docs/ai-bubble-contingency-plan-2026-10-07.md`, which is markdown and so is **not in this code-only copy**. The
+   code pins both rules and all their arithmetic; it does not pin which level is numbered 1 and which 2. If the
+   write-up numbers them the other way round, swap the two `level` fields in `LADDER` in
+   `staged/backend/ai-bubble-ladder.js` — no threshold, no arithmetic and no test changes, and the selftest's rung-id
+   check will need the two ids renamed with them. This is the one open question of substance; it is also listed under
+   `owed` in `record.cjs`'s row.
+4. **Then, at home and in this order:** `deploy.cjs --plan`, `deploy.cjs --apply`,
+   `node backend/ai-bubble-ladder-monitor.js` and compare it against `node docs/ai-bubble-2026-10/bust/now.js` over
+   the same store (the same rules from the same cache, so the 200-day and 10-month lines should agree),
+   `node backend/ai-bubble-ladder-monitor.js --write`, then `record.cjs --dry` and `record.cjs`.
+5. **Not done and deliberately not in this package:** nothing schedules the monitor. If it should run nightly, that is
+   a separate change to the close chain, with its own package.
+
+### Known limitations, stated rather than fixed
+
+- The status file grows by one key a day and is never pruned. That is deliberate (a day is a few kB), but if it is to
+  be kept for years it wants a retention rule, which this package does not have.
+- The default store is the 10-07 research cache `docs/ai-bubble-2026-10/bust/data`, filled by
+  `bust/fetch.js`. **The monitor never fetches**, so a daily reading is only as current as the last run of that
+  fetcher; the monitor says so by naming its data directory and the day it read, and by naming any series that lags.
+  Pointing it at a store the nightly chain refreshes would be a better home for it, and is a separate decision.
+- `deploy.cjs` reads the process list with `powershell.exe Get-CimInstance` on win32 and `ps -eo pid=,command=`
+  elsewhere. It was exercised on Linux here; at home (Windows) the powershell path has **not** been run, so the first
+  `deploy.cjs --plan` at home should be read for a "process list cannot be read" refusal before `--apply` is tried.
