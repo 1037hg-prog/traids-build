@@ -16,13 +16,15 @@ const RULE = {
   family: "ibs-dip",
   universe: ["EWZ", "EWW", "EWY", "EWT", "EWH", "EWS", "EWL", "EWP", "EWQ", "EWI", "EWN", "EWD", "EWK", "EWO", "EWM", "EZA", "ECH", "TUR", "THD", "EIDO", "EPHE", "INDA", "FXI", "ENZL"],
   params: { entry: { ibsBelow: 0.1 }, exit: { ibsAbove: 0.9 }, maxHoldDays: null },
-  window: { from: "2000-01-01", to: "2026-09-30", lastBar: "2026-10-01" },
+  window: { from: "2000-01-01", to: "2026-09-30", lastBar: "2026-10-01", maxGapDays: 14 },
   reservedForRegistration: true,
   costs: { roundTrip: 0.0012, stress: 0.0024, note: "country ETFs are wider than R313's sector ETFs: 0.12% round trip (2x R313's 0.06%), stress at 2x that" },
   unit: "month",
   bar: { variants: 1, note: "computed best-of-1 until registered; registration freezes bar.tRequired" },
   gates: { minTrades: 100, minMonths: 36 },
-  controls: { placeboDraws: 500, placeboSeed: 313, floorSeeds: 60, leakSeeds: [1, 2] },
+  // 61 drift-kept seeds, not R313's 60: at 60 the calibration's structural ceiling is exactly 5% and it can never hold a read; at 61 it is
+  // 4 of 61 (6.6%) and it can (checker cycle 4, D-7) — a draft choice the registration at home confirms or changes. 20 drift-free seeds as R313.
+  controls: { placeboDraws: 500, placeboSeed: 313, floorSeeds: 61, freeSeeds: 20, leakSeeds: [1, 2] },
   provenance: "R313 (SEALED PASS 2026-10-03) rule text: ENTRY close of t when IBS[t] < 0.1; EXIT close of the first u > t with IBS[u] > 0.9; one position per ETF; no stop, no time cap",
 };
 const a = process.argv.slice(2);

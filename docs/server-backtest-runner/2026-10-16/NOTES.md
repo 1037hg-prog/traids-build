@@ -22,12 +22,12 @@ Three NEW files. No live file is edited, so `base/` holds no copy:
   - **Governance:** a rule without `registration` runs only with `--exploratory`, and its file and verdict say EXPLORATORY. A registered rule must carry its registered `bar.tRequired` (used as given, never recomputed) and a `window.lastBar` at most 10 days after `window.to`, frozen at registration. The runner never reads or writes the registry.
 - **`backend/bt/rules/dip-ibs-country-etfs.json`** — the **first use**, written by `make-rules.cjs` through `writeJsonAtomic`. It is R313's IBS rule, unchanged (entry IBS < 0.1, exit IBS > 0.9, one position per ETF, no stop), on **24 single-country ETFs** that are in none of the family's registered universes: EWZ EWW EWY EWT EWH EWS EWL EWP EWQ EWI EWN EWD EWK EWO EWM EZA ECH TUR THD EIDO EPHE INDA FXI ENZL.
   - Costs are 0.12% round trip (country ETFs are wider than R313's), with stress at 0.24%.
-  - Placebo 500 draws (seed 313), floor 60 seeds, leak seeds 1 and 2, gates ≥ 100 trades and ≥ 36 months.
+  - Placebo 500 draws (seed 313), drift-kept floor **61** seeds (at 60 the calibration's ceiling is exactly 5% and it could never hold; at 61 it is 4 of 61), R313's 20 drift-free seeds, leak seeds 1 and 2, gates ≥ 100 trades and ≥ 36 months, gap limit 14 days.
   - **It is a DRAFT:** it has no registration, so it can only run as exploratory until it is registered at home.
 
 ## Checks (cloud, 2026-10-16)
 
-`node docs/server-backtest-runner/2026-10-16/selftest.cjs` → `ALL 86 CASES PASSED`, using synthetic bars only. It covers:
+`node docs/server-backtest-runner/2026-10-16/selftest.cjs` → `ALL 98 CASES PASSED`, using synthetic bars only. It covers:
 
 - **Verbatim reuse:** 20 functions identical to r313's text.
 - **Hand-computed known answer:** two trades at chosen closes, net = gross − 0.06% exactly, the month mean, an open trade not counted, NW t on [1%, 2%, −0.5%, 1.5%] = 3.5777, and the time cap.
@@ -133,6 +133,27 @@ Test edits, with reasons:
 - **The planted-edge calibration case:** "≤ 1 pass of 20" was replaced by the per-seed gate check plus the ceiling report. Reason: the old assertion could not fail (D1). Mutant Z04, which forces the calibration's placebo and floor-t gates to pass, is now caught.
 
 No case was removed (72 → 86).
+
+## Changes after checker cycle 4
+
+Cycle 4 result: no regressions and nothing blocking. The ceiling formula matched the runner for every N from 5 to 100, the drift-free arm cannot affect the verdict, and the 14-day gap default accepts every real exchange closure (the longest is 7 days, 9/11). Several fixes were unpinned. The fixes:
+
+- **D-1 — runner gap wiring.** The runner's gap check now has cases: a symbol missing a month inside the window is REFUSED, and every symbol's largest gap is in the sealed file. The shipped rule freezes `maxGapDays: 14`.
+- **D-2 — gaps before the window.** Gaps are measured only from a year before `window.from` (the longest indicator lookback). Thin history long before the window no longer refuses a symbol; a case covers this.
+- **D-3 — exact bounds.** Cases now cover `lastBar` = to + 10 days accepted and to + 11 refused, `maxGapDays` 4 accepted and 3 refused, and an impossible `window.to` (now validated) refused.
+- **D-4 — `rsi-dip` conditions.** Series where each condition decides: `closeBelowSma` on a pullback in an up-trend, the trend filter letting an entry through, the `rsiAbove` exit, and the capped simulate (no entry after `to`, an open position listed).
+- **D-5 — calibration gates.** Each per-seed calibration row now records its gate inputs, and the selftest recomputes every verdict with `decideRule`, which pins each calibration gate on its own. The real verdict's positive-control wiring is pinned, as are the trades / months boundaries.
+- **D-6 — drift-free arm fidelity.** The drift-free arm is now R313's: `controls.freeSeeds` (default 20) seeds numbered 1..N, demeaned. It is still reported only.
+- **D-7 — the shipped draft could never be held.** It now uses 61 drift-kept seeds, so its calibration can hold a read. This is a draft choice; registration confirms or changes it.
+- **D-8 / D-9:** `window.from` / `to` are real dates; the gate boundaries are tested.
+
+Test edits, with reasons:
+
+- **Fixture controls gained `freeSeeds: 2`** (2 places). Reason: speed. The default is R313's 20.
+- **The drift-free-arm case now expects seeds 1..2 and demeaned scrambles**, because the arm was made R313's (D-6).
+- No case was removed (86 → 98).
+
+**This was the last fix cycle the build rules allow (5 checks: cycles 1–4 fixed, cycle 5 is the final check).**
 
 ## Missing from this clean copy (not reconstructed)
 

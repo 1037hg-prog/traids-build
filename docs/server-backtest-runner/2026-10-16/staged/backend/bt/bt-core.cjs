@@ -129,7 +129,7 @@ const isWeekend = (d) => { const g = new Date(String(d).slice(0, 10) + "T12:00:0
  * date,open,high,low,close[,volume]) -> { bars: [{ t, o, h, l, c, v }], sha, file, weekendDropped }; THROWS on anything it cannot trust:
  * absent, unparseable, a price not finite and > 0, high < low, dates not strictly increasing (a duplicate included), a malformed date.
  */
-function loadBars(dir, sym, { lastBar = null, coverTo = null, maxGapDays = null } = {}) {
+function loadBars(dir, sym, { lastBar = null, coverTo = null, maxGapDays = null, gapFrom = null } = {}) {
   if (!/^[A-Z0-9.\-]{1,12}$/.test(sym)) throw new Error(`bad symbol ${JSON.stringify(sym)}`);
   const fj = path.join(dir, sym + ".json"), fc = path.join(dir, sym + ".csv"), file = fs.existsSync(fj) ? fj : fs.existsSync(fc) ? fc : null;
   if (!file) throw new Error(`${sym}: no bar file (${sym}.json or ${sym}.csv) in ${dir}`);
@@ -159,7 +159,9 @@ function loadBars(dir, sym, { lastBar = null, coverTo = null, maxGapDays = null 
   // coverage: the file must reach the window's end (within 7 days); a symbol whose data stop early is refused, never silently thinner
   if (coverTo) { const end = Date.parse(coverTo + "T00:00:00Z"), last = Date.parse(bars[bars.length - 1].t + "T00:00:00Z"); if (last < end - 7 * 86400000) throw new Error(`${sym}: its bars end ${bars[bars.length - 1].t}, before the window's end ${coverTo} (coverage)`); }
   // the largest calendar gap between consecutive bars (reported; refused above maxGapDays): a hole of months would book a whole move as one trade
-  let maxGap = 0, gapAt = null; for (let i = 1; i < bars.length; i++) { const g = (Date.parse(bars[i].t + "T00:00:00Z") - Date.parse(bars[i - 1].t + "T00:00:00Z")) / 86400000; if (g > maxGap) { maxGap = g; gapAt = bars[i - 1].t; } }
+  // measured from gapFrom on (the runner: a year before window.from, the longest indicator's lookback): thin history long before the window
+  // does not refuse a symbol whose in-window data are clean (checker cycle 4, D-2)
+  let maxGap = 0, gapAt = null; for (let i = 1; i < bars.length; i++) { if (gapFrom && bars[i - 1].t < gapFrom) continue; const g = (Date.parse(bars[i].t + "T00:00:00Z") - Date.parse(bars[i - 1].t + "T00:00:00Z")) / 86400000; if (g > maxGap) { maxGap = g; gapAt = bars[i - 1].t; } }
   if (maxGapDays != null && maxGap > maxGapDays) throw new Error(`${sym}: a gap of ${maxGap} calendar days after ${gapAt} (more than ${maxGapDays}: missing data)`);
   return { bars, sha: sha256(buf), file: path.basename(file), weekendDropped, afterLastDropped, maxGapDays: maxGap, maxGapAfter: gapAt };
 }
@@ -190,7 +192,8 @@ function checkRule(R) {
   if (ex.closeAboveSma != null && !(Number.isInteger(ex.closeAboveSma) && ex.closeAboveSma >= 2)) e("params.exit.closeAboveSma: an integer >= 2");
   if (P.maxHoldDays != null && !(Number.isInteger(P.maxHoldDays) && P.maxHoldDays >= 1)) e("params.maxHoldDays: an integer >= 1");
   const W = (R && R.window) || {};
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(W.from || "") || !/^\d{4}-\d{2}-\d{2}$/.test(W.to || "") || !(W.from < W.to)) e("window: from < to, both YYYY-MM-DD");
+  const realDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || "") && new Date(d + "T00:00:00Z").toISOString().slice(0, 10) === d;
+  if (!realDate(W.from) || !realDate(W.to) || !(W.from < W.to)) e("window: from < to, both YYYY-MM-DD");
   if (W.lastBar != null && !(/^\d{4}-\d{2}-\d{2}$/.test(W.lastBar) && W.lastBar >= W.to && Date.parse(W.lastBar + "T00:00:00Z") - Date.parse(W.to + "T00:00:00Z") <= 10 * 86400000)) e("window.lastBar: YYYY-MM-DD, on or after window.to and at most 10 days after it (bars after it are dropped: the forming-bar guard; frozen at registration)");
   if (W.maxGapDays != null && !(Number.isInteger(W.maxGapDays) && W.maxGapDays >= 4)) e("window.maxGapDays: an integer >= 4 (calendar days)");
   const C = (R && R.costs) || {};
@@ -204,6 +207,7 @@ function checkRule(R) {
   const C2 = (R && R.controls) || {};
   if (!(Number.isInteger(C2.placeboDraws) && C2.placeboDraws >= 10 && Number.isInteger(C2.placeboSeed))) e("controls: integer placeboDraws >= 10 and placeboSeed");
   if (!(Number.isInteger(C2.floorSeeds) && C2.floorSeeds >= 5)) e("controls.floorSeeds: an integer >= 5");
+  if (C2.freeSeeds != null && !(Number.isInteger(C2.freeSeeds) && C2.freeSeeds >= 1)) e("controls.freeSeeds: an integer >= 1 (R313: 20)");
   if (C2.maxWholeRuleFalsePass != null && !(fin(C2.maxWholeRuleFalsePass) && C2.maxWholeRuleFalsePass >= 0 && C2.maxWholeRuleFalsePass <= 0.05)) e("controls.maxWholeRuleFalsePass in [0, 0.05] (R313's limit is 0.05; a rule may be stricter, never looser)");
   if (!(Array.isArray(C2.leakSeeds) && C2.leakSeeds.length >= 1 && C2.leakSeeds.every(Number.isInteger))) e("controls.leakSeeds: a list of integer seeds");
   if (bad.length) throw new Error("the rule is refused:\n  - " + bad.join("\n  - "));

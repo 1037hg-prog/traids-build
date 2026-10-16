@@ -41,7 +41,8 @@
  "window": {
   "from": "2000-01-01",
   "to": "2026-09-30",
-  "lastBar": "2026-10-01"
+  "lastBar": "2026-10-01",
+  "maxGapDays": 14
  },
  "reservedForRegistration": true,
  "costs": {
@@ -61,7 +62,8 @@
  "controls": {
   "placeboDraws": 500,
   "placeboSeed": 313,
-  "floorSeeds": 60,
+  "floorSeeds": 61,
+  "freeSeeds": 20,
   "leakSeeds": [
    1,
    2
