@@ -1,5 +1,9 @@
 # OPTIONS-VANISHED-SETTLES — 2026-10-16
 
+> **HANDOVER — read this first.** The session that built this was stopped after ONE build cycle, before the independent check had
+> reported. See the [HANDOVER](#handover) section at the foot of this file for exactly what is done, what passes, and what is left.
+
+
 A staged package for ONE live file: `backend/options-settle.js`, the nightly sweep that closes the board's expired option spreads.
 
 ```
@@ -235,3 +239,64 @@ Expected shapes (both read tolerantly):
 
 `underlying-closes.json` (`{ SYM: { "YYYY-MM-DD": close } }`) is optional: without it the rule prices only from a close recorded on the
 position itself or from a bar the same run already read, and flags the rest UNKNOWN rather than guessing.
+
+---
+
+## HANDOVER
+
+This session was stopped by the operator after **one** build cycle. The builder's work is complete and its own checks pass; the
+**independent check had been launched but had not reported**, so cycles 2-5 of the build-check loop were never run. Nothing was
+applied, and nothing outside `docs/options-vanished-settles/2026-10-16/` was touched.
+
+### Done
+
+1. Found the sweep and settle code. The board's options sweep is `backend/options-settle.js`. (`backend/alpaca-options-mirror.js` is
+   named by `backend/profit-program/options-mirror-costs.js` but is **not in this clean copy** — it did not pass the copy's screens —
+   so the two file names this package reads from it are stated by convention and flagged for the operator to confirm; see
+   "Two file names to confirm at home" above. A wrong name makes the new rule never fire; it cannot make it settle wrongly.)
+2. Built the staged package in full: `base/` (byte-exact copy of the live file), `staged/`, `deploy.cjs --plan|--apply` with drift
+   refusal and a selftest gate, `rollback.cjs --plan|--apply` restoring `base/` byte for byte, `selftest.cjs` on small fixtures,
+   `record.cjs [--dry]`, `harness/`, and this NOTES.md.
+3. Implemented all three parts of the task in `staged/backend/options-settle.js`: the vanished-legs settle with its own tag, the
+   UNKNOWN-and-flagged path that never guesses, and the marking of mirror orders still shown as `"sent"` past their expiry.
+
+### What passes (builder's own run, 2026-10-16)
+
+```
+node --check  on all 7 .js/.cjs files of the package        exit 0
+node docs/options-vanished-settles/2026-10-16/selftest.cjs  ALL 69 CHECKS PASSED   (exit 0)
+```
+
+The 69 cover sections A-F described under "Tests" above, including seven base-vs-staged byte-for-byte comparisons of the ledger, the
+board and the tombstones; deploy/rollback on scratch repos with drift and all five fences; `record.cjs` dry and scratch writes; and
+**eleven mutants of the staged file, each caught by the check written for it**. No broker call and no network call of any kind: a
+preload makes `fetch`/`http`/`https`/`net`/`dns` throw and records the attempt, and check C19 asserts the recorded count is zero across
+all runs.
+
+### Left to do, in order
+
+1. **Run the independent check.** A checker subagent was launched read-only over this package and was still running when the session
+   was stopped; **its report was never seen, so treat none of its findings as known**. Re-run it: `node --check` on every file, the
+   selftest twice (the count must be 69 both times and must never shrink), `deploy.cjs` with no args / `--plan`, `rollback.cjs
+   --plan`, `record.cjs --dry` (each must write nothing — check `git status --porcelain` and `backend/data/` before and after), and
+   `git diff --no-index base/… staged/…` read as a reviewer.
+2. **Fresh mutation tests from someone other than the builder.** The eleven in section F are the builder's own and are therefore the
+   weakest part of the evidence. Mutants worth trying that section F does NOT cover: a sign or off-by-one error in the intrinsic;
+   `shortK`/`longK` swapped in the written row; the wrong contract multiplier; the snapshot date compared with `>=` instead of `>`; an
+   empty `positions` list read as "cannot tell"; a credit spread priced on the debit branch; `reason: "expiry"` instead of
+   `"expiry-vanished"`; `obs.settleTag` dropped; the `since` date lost when a flag is re-raised; a settled position left on the board;
+   a tombstone not written. Mutate a COPY of the package and re-stamp `STAGED_SHA` in its `deploy.cjs`, or check A2 catches every
+   mutant and proves nothing. Any mutant no check catches is a gap: add a check for it.
+3. **Fix and repeat, at most 5 cycles in all (one is spent).** Stop at once on a regression — a check that passed earlier now failing
+   — or if any test disappears or the count of 69 shrinks.
+4. **Only then, at home:** `deploy.cjs --plan`, read it (it prints how the 2026-10-12 a-booking package currently reads the file, and
+   what the new rule would find in the real data), confirm the two file names above against the live options mirror, `--apply` after
+   16:00 MT once the close chain has finished, read one live run of the settle step, then `record.cjs --dry` and without `--dry`.
+
+### Known, decided, and NOT outstanding
+
+* After `--apply`, `docs/profit-fixes/2026-10-12/a-booking` will read **DRIFT** on this file. That is expected and documented under
+  "What this does to the 2026-10-12 package"; roll this package back first if that one must ever be reverted.
+* The vanished-legs rule is **new** and no registered test asks for it. It is the operator's to accept; `record.cjs` carries
+  `breaksComparability: true` and every row it writes is tagged. See "The standing rule".
+* No registered test's rule, bar, population or read condition was changed, and no test was edited, weakened, skipped or deleted.
