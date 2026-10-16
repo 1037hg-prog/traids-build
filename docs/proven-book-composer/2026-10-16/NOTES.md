@@ -26,7 +26,7 @@ It is the **composer only**. It never decides a sleeve's rule, never registers a
 
 ## Checks (cloud, 2026-10-16)
 
-`node docs/proven-book-composer/2026-10-16/selftest.cjs` → `ALL 56 CASES PASSED`. The sizes in it are FIXTURE values, plainly not R353's. It covers:
+`node docs/proven-book-composer/2026-10-16/selftest.cjs` → `ALL 67 CASES PASSED`. The sizes in it are FIXTURE values, plainly not R353's. It covers:
 
 - R180's window (known answer, October 2026) and R180 via monthSessions.
 - Known plans: empty book, full-slot entries in priority order, whole shares, exits, ignored exits, unsettled proceeds.
@@ -58,7 +58,7 @@ Cycle 2 result: no regressions. 540,000 boundary nights matched an exact-arithme
 
 - **X1 (medium) — the Stacker could crowd out the first layer.** In a cash account a Stacker sale frees cap room tonight but cash only tomorrow.
   - The Stacker now also **yields to R180's buy-up** (for cash too when proceeds count).
-  - On the night before R180's window opens (session −7, known when `monthSessions` is given), a cash account **holds R180's missing amount back from the offer**. The plan shows it as `offer.heldBackForR180Usd`.
+  - In a cash account, whenever R180 will hold tomorrow and is short, the Stacker is sold tonight for tomorrow and R180's remaining need is held back from the offer (cycle 3 below). The plan shows it as `offer.heldBackForR180Usd`.
   - Tomorrow's **dip** demand cannot be known tonight. **Set `reserveUsd` from R353 to the dips' usual nightly demand.** The Stacker should hold instruments that can be sold at the close.
   - The "R180 below target" note now names the real cause.
 - **X2 / X3 — the month calendar.** R180's input is now the month's **whole calendar**: `monthSessions` plus `closedWeekdays` (holidays). Together they must cover every weekday of the month exactly once. A "sessions so far" list, a weekend date, an empty list or a non-date is refused. Known answers: October 2026, and May 2021 with Memorial Day on the 31st.
@@ -68,6 +68,24 @@ No case was removed or weakened (45 → 56). Two cases changed:
 
 - The partial-month refusal now expects the new message, because the check itself changed (X2).
 - The random-night invariant "a yield only on a dip night" now also allows "a yield to R180's window on a night R180 buys", because of the new behaviour (X1).
+
+## Changes after checker cycle 3
+
+Cycle 3 result: no regressions, and 0 differences from an exact-arithmetic reference over 300,000 nights. Its findings:
+
+- **D1 (medium) — X1 was only half fixed.** In a cash account, a Stacker that was already invested could keep R180 out of its whole window: the hold-back only lowered tonight's new offer. Now, whenever R180 will want to hold **tomorrow** (`wantNext`, from the month calendar) and is short after tonight, the Stacker is **sold tonight for tomorrow** by what tomorrow's settled cash lacks, and R180's remaining need is held back. Known answer: the Stacker is fully invested on −8; on −7 $50,000 of BIL is sold; on −6 R180 buys its whole target.
+- **D3 — a pointless Stacker sale.** The Stacker could be sold for R180 even when R180 then could not buy a share. It is now sold only for whole IEF shares that can then be bought, and only if at least one can.
+- **D4 — the hold-back was too strict.** It now comes out of cash, not the cap (a Stacker sale can free the cap tomorrow), and tonight's sale proceeds count as tomorrow's cash.
+- **D2 — the random nights were mostly repeats.** The float-based generator gave only 300 distinct nights. It is now mulberry32: 3,000 distinct nights, asserted, with 40% of them R180-calendar nights, so the hold-back and `wantNext` are fuzzed.
+- **D5 — test gaps.** New cases cover: a date from another month, an impossible date, a reserve plus the hold-back, no hold-back inside the window at target, session −8, the hold-back from cash under a cap of 0.5, proceeds counted, and `stackerYields: false` with nothing else to free.
+
+Test edits, with reasons:
+
+- **"In a cash account the Stacker is not sold for nothing"** now expects the Stacker to be **sold tonight for tomorrow**. Reason: that was the D1 defect, and the behaviour changed on purpose.
+- **The random-night generator** changed to mulberry32, which strengthens the test.
+- **The invariant's offer formula** now includes the hold-back, and the yield invariant names the new R180 yields.
+
+No case was removed (56 → 67).
 
 ## Missing from this clean copy (not reconstructed)
 

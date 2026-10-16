@@ -109,7 +109,31 @@ section("checker cycle 2: the full month calendar, the Stacker never crowds out 
   const s6 = K.compose(NIGHT({ asOf: oct[oct.length - 6], cash: 0, positions: [{ sleeve: "stacker", sym: "BIL", qty: 1000 }], intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG({ countExitProceeds: true }));
   ok("R180's window opens with all the money in the Stacker (proceeds count): the Stacker YIELDS to R180, which buys its target; the note no longer blames the dip-buys", sells(s6, "stacker").length === 1 && /R180's window/.test(sells(s6, "stacker")[0].why) && s6.after.bySleeve.R180 === 50000, JSON.stringify(s6.orders.map((o) => [o.sleeve, o.side, o.qty, o.why])));
   const s6c = K.compose(NIGHT({ asOf: oct[oct.length - 6], cash: 0, positions: [{ sleeve: "stacker", sym: "BIL", qty: 1000 }], intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG());
-  ok("... in a cash account the Stacker is not sold for nothing (its sale could not pay tonight); R180 is noted short, naming the unsettled Stacker money", !sells(s6c).length && s6c.notes.some((n) => /in the Stacker and not settled/.test(n)));
+  ok("... in a cash account (checker cycle 3, D1): R180 cannot buy TONIGHT (the Stacker's sale would not settle), so the Stacker is sold tonight FOR TOMORROW — $50,000 of BIL, settling by session -5 — and R180 is noted short", sells(s6c, "stacker").length === 1 && /tomorrow's R180 window/.test(sells(s6c, "stacker")[0].why) && Math.abs(sells(s6c, "stacker")[0].estUsd - 50000) < 100 && !buys(s6c).length && s6c.notes.some((n) => /R180 below its target/.test(n)) && s6c.offer.usd === 0, JSON.stringify([s6c.orders, s6c.offer]));
+  // ... and the next night that money has settled: R180 buys its target
+  const s5 = K.compose(NIGHT({ asOf: oct[oct.length - 5], cash: s6c.after.unsettledProceedsUsd, positions: s6c.after.positions, intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG());
+  ok("... and the next night (session -5) the settled cash buys R180's target: the Stacker no longer keeps R180 out of its window", s5.after.bySleeve.R180 === 50000 && !sells(s5, "stacker").length, JSON.stringify([s5.orders, s5.after.bySleeve]));
+  // the steady state: the Stacker fully invested on -8; -7 sells it for tomorrow; -6 R180 buys
+  const s8 = K.compose(NIGHT({ asOf: oct[oct.length - 8], cash: 0, positions: [{ sleeve: "stacker", sym: "BIL", qty: 1000 }], intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG());
+  const s7 = K.compose(NIGHT({ asOf: oct[oct.length - 7], cash: 0, positions: [{ sleeve: "stacker", sym: "BIL", qty: 1000 }], intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG());
+  const s6b = K.compose(NIGHT({ asOf: oct[oct.length - 6], cash: s7.after.unsettledProceedsUsd, positions: s7.after.positions, intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG());
+  ok("the steady state (cash account, Stacker fully invested): session -8 sells nothing (wantNext false, nothing held back); -7 sells $50,000 of BIL for tomorrow; -6 R180 buys its whole target", !s8.orders.length && s8.r180.wantNext === false && s8.offer.heldBackForR180Usd === 0 && sells(s7, "stacker").length === 1 && s6b.after.bySleeve.R180 === 50000, JSON.stringify([s8.orders, s7.orders, s6b.orders]));
+  // checker cycle 3 (D3, D4, D5)
+  const d3 = K.compose(NIGHT({ asOf: oct[oct.length - 5], cash: 50, positions: [{ sleeve: "stacker", sym: "BIL", qty: 1 }], prices: { ...PX, BIL: 64 }, intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG({ countExitProceeds: true }));
+  ok("$50 cash + a $64 BIL = $114, enough for one $100 IEF share: the BIL is sold for R180 only together with that buy", sells(d3, "stacker").length === 1 && buys(d3, "R180").length === 1 && buys(d3, "R180")[0].qty === 1, JSON.stringify(d3.orders));
+  const d3b = K.compose(NIGHT({ asOf: oct[oct.length - 2], cash: 30, positions: [{ sleeve: "stacker", sym: "BIL", qty: 1 }], prices: { ...PX, BIL: 64 }, intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG({ countExitProceeds: true }));
+  ok("... with $30 cash + a $64 BIL ($94 < one $100 IEF share): the BIL is NOT sold, R180 buys nothing", !d3b.orders.length, JSON.stringify(d3b.orders));
+  const d4 = K.compose(NIGHT({ asOf: oct[oct.length - 7], cash: 100000, intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG({ exposureCap: 0.5 }));
+  ok("the hold-back comes out of CASH, not the cap: cap $50,000, cash $100,000, $50,000 held back for R180 -> the offer is still $50,000 (a Stacker sale can free the cap tomorrow)", d4.offer.heldBackForR180Usd === 50000 && d4.offer.usd === 50000, JSON.stringify(d4.offer));
+  const d4b = K.compose(NIGHT({ asOf: oct[oct.length - 7], cash: 60000, positions: [{ sleeve: "R313", sym: "XLF", qty: 800 }], intents: { R313: { exits: ["XLF"], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG());
+  ok("tonight's exit proceeds ($40,000) count as tomorrow's cash for R180: only $10,000 is held back, the offer is $50,000", d4b.offer.heldBackForR180Usd === 10000 && d4b.offer.usd === 50000, JSON.stringify(d4b.offer));
+  const d5 = K.compose(NIGHT({ asOf: oct[oct.length - 7], cash: 100000, intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG({ reserveUsd: 10000 }));
+  ok("a reserve and the R180 hold-back together are BOTH kept back: offer = $100,000 - $50,000 - $10,000", d5.offer.usd === 40000 && d5.offer.heldBackForR180Usd === 50000, JSON.stringify(d5.offer));
+  const d5in = K.compose(NIGHT({ asOf: oct[oct.length - 4], cash: 50000, positions: [{ sleeve: "R180", sym: "IEF", qty: 500 }], intents: { R313: { exits: [], entries: [] }, R328: { exits: [], entries: [] }, R180: { monthSessions: oct } } }), CFG());
+  ok("inside the window with R180 at its target: nothing held back, the whole $50,000 offered", d5in.offer.heldBackForR180Usd === 0 && d5in.offer.usd === 50000);
+  ok("a date from another month and an impossible date (2026-02-30): each REFUSED", refuses(() => K.r180Want("2026-10-30", [...oct, "2026-11-02"]), /not in asOf's month/) && refuses(() => K.r180Want("2026-02-27", ["2026-02-30"]), /not a date/));
+  const fy = K.compose(NIGHT({ cash: 0, positions: [{ sleeve: "stacker", sym: "BIL", qty: 100 }], intents: { R313: { exits: [], entries: [{ sym: "SPY" }] }, R328: { exits: [], entries: [] }, R180: { want: false } } }), CFG({ countExitProceeds: true, stackerYields: false }));
+  ok("stackerYields false and nothing else to free: the dip is SKIPPED and the Stacker is NOT sold", !fy.orders.length && fy.skipped.length === 1, JSON.stringify(fy.orders));
   // N14: an exact fit that NEEDS a yield (found by search against a raw comparison)
   const ex = K.compose(NIGHT({ cash: 420.63, positions: [{ sleeve: "R180", sym: "IEF", qty: 1 }], prices: { ...PX, IEF: 52.87, AAA: 18.94 }, intents: { R313: { exits: [], entries: [{ sym: "AAA" }] }, R328: { exits: [], entries: [] }, R180: { want: true } } }),
     CFG({ countExitProceeds: true, sleeves: { R313: { slotUsd: 473.5 }, R328: { slotUsd: 5000 }, R180: { sym: "IEF", targetUsd: 1e9 } } }));
@@ -129,7 +153,10 @@ section("refusals", () => {
 });
 
 section("invariants over 3,000 random nights (seeded)", () => {
-  let s = 20261016; const rnd = () => { s = (s * 1103515245 + 12345) % 2147483648; return s / 2147483648; }, pick = (a) => a[Math.floor(rnd() * a.length)];
+  // mulberry32 (a 32-bit integer PRNG): the earlier float LCG lost its low bits and gave only 300 distinct nights (checker cycle 3, D2)
+  let s = 20261016 >>> 0; const rnd = () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }, pick = (a) => a[Math.floor(rnd() * a.length)];
+  const octS = []; for (let d = 1; d <= 31; d++) { const tt = `2026-10-${String(d).padStart(2, "0")}`, g = new Date(tt + "T12:00:00Z").getUTCDay(); if (g && g !== 6) octS.push(tt); }
+  const seenNights = new Set();
   const names = Object.keys(PX).filter((k) => k !== "IEF" && k !== "BIL"); let broken = [], deterministic = true, n = 0;
   for (let t = 0; t < 3000; t++) {
     const prices = Object.fromEntries(Object.entries(PX).map(([k, v]) => [k, +(v * (0.7 + 0.6 * rnd())).toFixed(2)]));
@@ -138,24 +165,29 @@ section("invariants over 3,000 random nights (seeded)", () => {
     const held = (sl) => positions.filter((p) => p.sleeve === sl).map((p) => p.sym);
     const night = NIGHT({ cash: Math.floor(rnd() * 120000), positions, prices,
       intents: { R313: { exits: held("R313").filter(() => rnd() < 0.4), entries: names.filter(() => rnd() < 0.15).map((sym) => ({ sym, rank: Math.floor(rnd() * 5) })) },
-        R328: { exits: held("R328").filter(() => rnd() < 0.4), entries: names.filter(() => rnd() < 0.15).map((sym) => ({ sym })) }, R180: { want: rnd() < 0.5 } } });
+        R328: { exits: held("R328").filter(() => rnd() < 0.4), entries: names.filter(() => rnd() < 0.15).map((sym) => ({ sym })) }, R180: rnd() < 0.4 ? { monthSessions: octS } : { want: rnd() < 0.5 } } });
+    if (night.intents.R180.monthSessions) night.asOf = pick(octS.slice(-12));
     const cfg = CFG({ exposureCap: pick([0.5, 0.8, 1]), countExitProceeds: rnd() < 0.5, r180YieldsToDips: rnd() < 0.8, stackerYields: rnd() < 0.8, reserveUsd: pick([0, 1000]), sleeves: { R313: { slotUsd: pick([2500, 5000]) }, R328: { slotUsd: pick([2500, 5000]) }, R180: { sym: "IEF", targetUsd: pick([0, 30000, 50000]) } } });
+    seenNights.add(JSON.stringify([night, cfg]));
     let p; try { p = K.compose(night, cfg); } catch (e) { broken.push(`night ${t}: threw ${e.message.slice(0, 120)}`); continue; }
     n++;
     const equity = night.cash + positions.reduce((a, x) => a + x.qty * prices[x.sym], 0), cap = cfg.exposureCap * equity;
     const exitsOk = p.orders.filter((o) => o.side === "sell" && (o.sleeve === "R313" || o.sleeve === "R328")).every((o) => night.intents[o.sleeve].exits.includes(o.sym));
     const fullSlot = buys(p).filter((o) => o.sleeve !== "R180").every((o) => o.qty === Math.floor(cfg.sleeves[o.sleeve].slotUsd / prices[o.sym]));
-    const offerOk = Math.abs(p.offer.usd - Math.max(0, Math.min(cap - p.after.grossUsd, p.after.cashUsd + (cfg.countExitProceeds ? p.after.unsettledProceedsUsd : 0)) - cfg.reserveUsd)) < 0.02;
+    const offerOk = Math.abs(p.offer.usd - Math.max(0, Math.min(cap - p.after.grossUsd, p.after.cashUsd + (cfg.countExitProceeds ? p.after.unsettledProceedsUsd : 0) - p.offer.heldBackForR180Usd) - cfg.reserveUsd)) < 0.02;
     const r180Max = p.after.bySleeve.R180 <= Math.max(cfg.sleeves.R180.targetUsd, positions.filter((x) => x.sleeve === "R180").reduce((a, x) => a + x.qty * prices.IEF, 0)) + 1e-6;
-    const notWanted = night.intents.R180.want || p.after.bySleeve.R180 === 0;
-    const yieldOnlyWhenEntered = (!p.orders.some((o) => /yields to a dip-buy/.test(o.why)) || buys(p).some((o) => o.sleeve !== "R180")) && (!p.orders.some((o) => /yields to R180's window/.test(o.why)) || (night.intents.R180.want && buys(p, "R180").length > 0));
+    const notWanted = (night.intents.R180.monthSessions ? p.r180.want : night.intents.R180.want) || p.after.bySleeve.R180 === 0;
+    const tomorrowYieldOk = !p.orders.some((o) => /tomorrow's R180 window/.test(o.why)) || (!cfg.countExitProceeds && p.r180.wantNext === true);
+    const r180YieldBuys = !p.orders.some((o) => /yields to R180's window/.test(o.why)) || buys(p, "R180").length > 0;
+    const yieldOnlyWhenEntered = (!p.orders.some((o) => /yields to a dip-buy/.test(o.why)) || buys(p).some((o) => o.sleeve !== "R180")) && r180YieldBuys;
     const dipHeld = positions.filter((x) => (x.sleeve === "R313" || x.sleeve === "R328") && !night.intents[x.sleeve].exits.includes(x.sym)).reduce((a, x) => a + x.qty * prices[x.sym], 0);
     const capOk = p.after.grossUsd <= Math.max(cap, dipHeld) + 0.01 && (p.after.grossUsd <= cap + 0.01 || !buys(p).length);
-    if (!(capOk && p.after.cashUsd >= -0.01 && exitsOk && fullSlot && offerOk && r180Max && notWanted && yieldOnlyWhenEntered)) broken.push(`night ${t}: ${JSON.stringify({ g: p.after.grossUsd, cap, dipHeld, cash: p.after.cashUsd, exitsOk, fullSlot, offerOk, r180Max, notWanted, yieldOnlyWhenEntered })}`);
+    if (!(capOk && tomorrowYieldOk && p.after.cashUsd >= -0.01 && exitsOk && fullSlot && offerOk && r180Max && notWanted && yieldOnlyWhenEntered)) broken.push(`night ${t}: ${JSON.stringify({ g: p.after.grossUsd, cap, dipHeld, cash: p.after.cashUsd, exitsOk, fullSlot, offerOk, r180Max, notWanted, yieldOnlyWhenEntered })}`);
     if (t % 300 === 0 && JSON.stringify(K.compose(night, cfg)) !== JSON.stringify(p)) deterministic = false;
   }
-  ok(`${n} random nights: gross <= cap (or, with held dips alone over it, no buy and nothing above them), cash >= 0 (no margin), dip buys at full slot, dip sells only their own exits, R180 never above max(target, held) and flat when not wanted, a yield only on a night with a dip entry, offer = idle room - reserve`, !broken.length && n === 3000, broken.slice(0, 3).join(" | "));
+  ok(`${n} random nights: gross <= cap (or, with held dips alone over it, no buy and nothing above them), cash >= 0 (no margin), dip buys at full slot, dip sells only their own exits, R180 never above max(target, held) and flat when not wanted, a yield only on a night with a dip entry (or for R180 when it then buys, or for tomorrow's R180 only in a cash account with wantNext), offer = idle room - R180 hold-back - reserve`, !broken.length && n === 3000, broken.slice(0, 3).join(" | "));
   ok("the same night and config give the same plan (deterministic)", deterministic);
+  ok(`the random nights are distinct (${seenNights.size} of 3,000) and include calendar nights (R180 by monthSessions, hold-backs and wantNext fuzzed)`, seenNights.size === 3000);
 });
 
 section("the CLI, and no broker / network / order code", () => {

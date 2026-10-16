@@ -192,10 +192,17 @@ function compose(nightly, config) {
     else if (curQ < targetQ) {
       // the second layer never crowds out the first (checker cycle 2, X1): the Stacker yields to R180's buy-up too — for the cap at once, and
       // for cash only when proceeds count (a cash account cannot spend tonight's Stacker sale tonight)
+      // Only as much as WHOLE IEF shares can use, and never unless at least one more share can then be bought (checker cycle 3, D3).
       if (C.stackerYields) {
-        const want$ = (targetQ - curQ) * price, capRoom = capUsd - gross(), capShort = want$ - capRoom;
-        const need = C.countExitProceeds ? Math.max(capShort, want$ - spendable()) : Math.min(capShort, spendable() - capRoom);
-        if (need > EPS && [...pos.values()].some((p) => p.sleeve === STACKER)) { const f = yieldFrom(STACKER, need, "R180's window"); pending += f; }
+        const stackUsd = [...pos.values()].filter((p) => p.sleeve === STACKER).reduce((a, p) => a + p.qty * px(p.sym), 0);
+        const capRoom = capUsd - gross(), sp = spendable(), roomNow = Math.max(0, Math.min(capRoom, sp));
+        // room after selling y of the Stacker: proceeds count -> min(capRoom, sp) + y; a cash account -> min(capRoom + y, sp)
+        const roomMax = C.countExitProceeds ? roomNow + stackUsd : Math.max(0, Math.min(capRoom + stackUsd, sp));
+        const q = Math.min(targetQ - curQ, Math.floor((roomMax + EPS) / price));
+        if (q >= 1 && q * price > roomNow + EPS) {
+          const y = C.countExitProceeds ? q * price - roomNow : q * price - capRoom;
+          if (y > EPS) { const f = yieldFrom(STACKER, y, "R180's window"); pending += f; }
+        }
       }
       const q = Math.min(targetQ - curQ, Math.floor((Math.max(0, room()) + EPS) / price));
       if (q > 0) { orders.push({ sleeve: CAL, sym: cal.sym, side: "buy", qty: q, estUsd: r2(q * price), why: q < targetQ - curQ ? "R180 up to what is left" : "R180 to its target" }); if (C.countExitProceeds) { const u = q * price, fp = Math.min(pending, u); pending -= fp; cash -= u - fp; } else cash -= q * price; if (cur) cur.qty += q; else pos.set(calKey, { sleeve: CAL, sym: cal.sym, qty: q, price }); }
@@ -203,13 +210,24 @@ function compose(nightly, config) {
     }
   }
   // 5. the offer to the second layer
+  // 5. TOMORROW'S R180 IN A CASH ACCOUNT (checker cycles 2-3, X1/D1): money sold tonight settles by tomorrow, money kept in cash is there
+  //    tomorrow, money in the Stacker is not. So whenever R180 wants to hold tomorrow (wantNext, known from the month calendar) and is short
+  //    of its target after tonight: (a) the Stacker is sold TONIGHT for what tomorrow's settled cash (cash + tonight's sale proceeds) lacks,
+  //    and (b) R180's remaining need is held back from tonight's offer — out of CASH (the cap can be freed tomorrow by a Stacker sale), with
+  //    tonight's proceeds counted as tomorrow's cash. Proceeds-count accounts need neither: the Stacker yields to R180 on the night itself.
+  let holdBackR180 = 0;
+  if (!C.countExitProceeds && win.wantNext === true) {
+    const price = px(cal.sym), calNow = [...pos.values()].filter((p) => p.sleeve === CAL).reduce((a, p) => a + p.qty * px(p.sym), 0);
+    const need = fin(price) && price > 0 ? Math.floor(cal.targetUsd / price) * price - calNow : 0;
+    if (need > EPS) {
+      const tomorrowCash = cash + pending - C.reserveUsd;
+      if (C.stackerYields && need - tomorrowCash > EPS && [...pos.values()].some((p) => p.sleeve === STACKER)) { const f = yieldFrom(STACKER, need - tomorrowCash, "tomorrow's R180 window (a cash account: tonight's sale settles by then)"); pending += f; }
+      holdBackR180 = Math.max(0, need - pending);
+    }
+  }
   const grossAfter = gross(), cashAfter = cash + (C.countExitProceeds ? pending : 0);
-  // in a cash account the Stacker's money is not free again until the day after it sells: on the night before R180's window opens, R180's
-  // missing amount is held back from the offer, so tomorrow's entry finds settled cash (checker cycle 2, X1). Tomorrow's DIP demand is
-  // unknown tonight: reserveUsd is that hold-back (NOTES: set it from R353 to the dip sleeves' usual nightly demand).
-  const calNowUsd = [...pos.values()].filter((p) => p.sleeve === CAL).reduce((a, p) => a + p.qty * px(p.sym), 0);
-  const holdBackR180 = !C.countExitProceeds && win.wantNext === true && !want ? Math.max(0, cal.targetUsd - calNowUsd) : 0;
-  const offerUsd = Math.max(0, Math.min(capUsd - grossAfter, cashAfter) - C.reserveUsd - holdBackR180);
+  // tomorrow's DIP demand is unknown tonight: reserveUsd is that hold-back (NOTES: set it from R353 to the dip sleeves' usual nightly demand)
+  const offerUsd = Math.max(0, Math.min(capUsd - grossAfter, cashAfter - holdBackR180) - C.reserveUsd);
   const bySleeve = Object.fromEntries(SLEEVES.map((s) => [s, r2([...pos.values()].filter((p) => p.sleeve === s).reduce((a, p) => a + p.qty * px(p.sym), 0))]));
   const checks = {
     grossWithinCap: grossAfter <= Math.max(capUsd, dipHeldAfterExits) + 2 * EPS && (grossAfter <= capUsd + 2 * EPS || !orders.some((o) => o.side === "buy")),
