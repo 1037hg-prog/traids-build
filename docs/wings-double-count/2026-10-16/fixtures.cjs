@@ -62,11 +62,14 @@ const RISK = 400;
  * restored wing still carried the void tag, the REAL close inherited it. Under a registry that honours
  * the tag the ticket then counts ZERO times instead of twice, and both are wrong.
  */
-const wingSettle = (i, { inheritedTag = false } = {}) => ({
+const wingSettle = (i, { inheritedTag = false, tagNoNote = false } = {}) => ({
   id: `w${i + 1}`, sym: WING_SYMS[i], cls: "Options", dir: -1, strategy: "R21-premium", sleeve: "R21-premium",
   reason: "expiry", ctrl: false, openedAt: OPENED, closedAt: EXPIRY_CLOSE,
   pnl: WING_PNL[i], rMult: WING_PNL[i] / RISK, riskDollars: RISK, contracts: 1,
   ...(inheritedTag ? { retired: VOID_TAG, retireNote: "the loss cap fired on a stale mark; this close is void for evidence", voidForEvidence: true } : {}),
+  // tagNoNote: the surviving close carries the tag but NOT a retireNote. Only the SUPERSEDED row has the
+  // note, so whether the tag counts depends on which rows validRetireTags is computed over — see EXPECT.
+  ...(tagNoNote ? { retired: VOID_TAG, voidForEvidence: true } : {}),
   obs: { optExpiry: "2026-09-18", width: 5, optCall: false, restoredAfter: VOID_TAG },
 });
 const wingVoided = (i) => ({
@@ -80,6 +83,26 @@ const OTHERS = () => [
   { id: "e1", sym: "AAA", cls: "Equity", dir: 1, strategy: "Breakout", ctrl: false, openedAt: ms("2026-09-15T14:00:00Z"), closedAt: EQ_CLOSE, pnl: 200, rMult: 0.5, riskDollars: 400 },
   { id: "e2", sym: "BBB", cls: "Equity", dir: 1, strategy: "Breakout", ctrl: false, openedAt: ms("2026-09-15T14:00:00Z"), closedAt: EQ_CLOSE, pnl: -100, rMult: -0.25, riskDollars: 400 },
   { id: "c1", sym: "CCC", cls: "Equity", dir: 1, strategy: "Breakout", ctrl: true, openedAt: ms("2026-09-15T14:00:00Z"), closedAt: EQ_CLOSE, pnl: 50, rMult: 0.125, riskDollars: 400 },
+  // x9: a CLOSED ledger row under a strategy options-news-shadow does not report, whose id is also on the
+  // board under a sleeve it DOES report. It must not hide the board row — the dedupe is "a closed row this
+  // report would have counted", not "any closed row". Pins base == staged on that path.
+  // Its rMult and pnl are null ON PURPOSE, so it enters NO P&L population (every reader here requires both
+  // to be finite) and changes no other number in EXPECT — only the row and ticket counts.
+  { id: "x9", sym: "XXX", cls: "Equity", dir: 1, strategy: "Breakout", ctrl: false, openedAt: ms("2026-09-11T14:00:00Z"), closedAt: EQ_CLOSE, pnl: null, rMult: null, riskDollars: 400 },
+];
+
+/**
+ * THE OPEN BOARD. options-news-shadow.js reads board_positions.json beside the ledger, so the fixture has
+ * real open rows: one wing the ledger has not closed (must count, state open, no R), one whose id the
+ * ledger HAS closed (must not be counted twice), and x9 (see above).
+ */
+const BOARD = () => [
+  { id: "b1", sym: "SPY", cls: "Options", dir: -1, strategy: "R21-premium", sleeve: "R21-premium", ctrl: false,
+    addedAt: ms("2026-09-11T14:00:00Z"), optExpiry: "2026-09-25", contracts: 1, riskDollars: RISK, obs: { optExpiry: "2026-09-25" } },
+  { id: "w1", sym: "SPY", cls: "Options", dir: -1, strategy: "R21-premium", sleeve: "R21-premium", ctrl: false,
+    addedAt: OPENED, optExpiry: "2026-09-18", contracts: 1, riskDollars: RISK, obs: { optExpiry: "2026-09-18", restoredAfter: VOID_TAG } },
+  { id: "x9", sym: "XXX", cls: "Options", dir: -1, strategy: "R21-premium", sleeve: "R21-premium", ctrl: false,
+    addedAt: ms("2026-09-11T14:00:00Z"), optExpiry: "2026-09-25", contracts: 1, riskDollars: RISK, obs: { optExpiry: "2026-09-25" } },
 ];
 /** s1's surviving close names the row it replaced; that row is NOT marked voidForEvidence and closed LATER */
 const s1Survivor = () => ({ id: "s1", sym: "DDD", cls: "Options", dir: -1, strategy: "R21-premium", sleeve: "R21-premium", reason: "expiry",
@@ -96,10 +119,16 @@ function ledger(order, opts = {}) {
   return order === "append" ? [...superseded, ...OTHERS(), ...survivors] : [...survivors, ...OTHERS(), ...superseded];
 }
 
-/** the journal seals the close it saw FIRST and never moves it: the superseded one for w1..w6 and s1 */
+/**
+ * The journal seals the close it saw FIRST and never moves it: the superseded one for w1..w6 and s1. The
+ * LAST line repeats w1 with its expiry close — an entry that a correct reader must IGNORE, because the
+ * first seal is the seal. Eleven lines, ten ticket ids.
+ */
 function journal() {
   const sealed = [...WING_PNL.map((_, i) => wingVoided(i)), s1Superseded(), ...OTHERS()];
-  return sealed.map((t) => JSON.stringify({ ...t, journaledAt: "2026-09-14T23:59:00.000Z" })).join("\n") + "\n";
+  const lines = sealed.map((t) => JSON.stringify({ ...t, journaledAt: "2026-09-14T23:59:00.000Z" }));
+  lines.push(JSON.stringify({ ...wingSettle(0), journaledAt: "2026-09-18T23:59:00.000Z" }));
+  return lines.join("\n") + "\n";
 }
 
 const changeRegistry = (kind) => ({
@@ -120,12 +149,12 @@ const redFolders = () => ({
  * `base` is what the files this package starts from produce; `staged` is what the changed files must.
  */
 const EXPECT = Object.freeze({
-  rowsInFile: 17, tickets: 10, duplicateTicketIds: 7, supersededRows: 7,
+  rowsInFile: 18, tickets: 11, duplicateTicketIds: 7, supersededRows: 7,
   wings: { perRow: -3000, perTicket: -600 },
   signalPnl: { perRow: -3280, perTicket: -380 },
   // cleanEraLedger(), bare registry: nothing is validly retired, so base counts every row
   ledgerBare: { base: { n: 16, meanR: -0.4969, controlMeanR: 0.125, pooledEdgeR: -0.6219, settled: 17, retiredExcluded: 0 },
-    staged: { n: 9, meanR: -0.1056, controlMeanR: 0.125, pooledEdgeR: -0.2306, settled: 10, retiredExcluded: 0, tickets: 10, duplicateTicketIds: 7, supersededRowsDropped: 7 } },
+    staged: { n: 9, meanR: -0.1056, controlMeanR: 0.125, pooledEdgeR: -0.2306, settled: 10, retiredExcluded: 0, tickets: 11, duplicateTicketIds: 7, supersededRowsDropped: 7 } },
   // cleanEraLedger(), registered registry: the retire rule drops the six voided WING rows, and nothing else
   ledgerRegistered: { base: { n: 10, meanR: -0.195, settled: 11, retiredExcluded: 6 },
     staged: { n: 9, meanR: -0.1056, settled: 10, retiredExcluded: 0 } },
@@ -136,16 +165,41 @@ const EXPECT = Object.freeze({
     staged: { sessions: 2, curveEnd: -380, firstSession: "2026-09-16" } },
   // integrity-audit.js section 3 (the too-good tripwire), signals only
   integrity: { base: { cleanN: 16, winRate: 0.3125, meanR: -0.4969, optionsInSignalLedger: 14 },
-    staged: { cleanN: 9, winRate: 0.5556, meanR: -0.1056, optionsInSignalLedger: 7, duplicateTicketIds: 7, tickets: 10 } },
-  // options-news-shadow.js: all six wings are exposed to the 09-15 USD release (the EUR one must not count).
-  // On the APPEND order the arrival-order dedupe picks the VOIDED close; keyed on the ticket id it cannot.
-  newsShadow: { exposedTickets: 7, notExposedTickets: 0,
+    staged: { cleanN: 9, winRate: 0.5556, meanR: -0.1056, optionsInSignalLedger: 7, duplicateTicketIds: 7, tickets: 11 } },
+  // options-news-shadow.js: nine sleeve tickets are exposed to the 09-15 USD release (the EUR one must not
+  // count) — the six wings, s1, and the two open board rows (b1, and x9 whose closed ledger row is under a
+  // strategy this report does not cover). On the APPEND order the arrival-order dedupe picks the VOIDED
+  // close for the seven settled ones; keyed on the ticket id it cannot.
+  newsShadow: { exposedTickets: 9, notExposedTickets: 0, exposedSettled: 7,
     appendOrder: { base: { sumPnl: -2900, meanR: -1 }, staged: { sumPnl: -480, meanR: -0.1714 } },
     prependOrder: { base: { sumPnl: -480, meanR: -0.1714 }, staged: { sumPnl: -480, meanR: -0.1714 } } },
-  // journalLag(): ten sealed entries against seventeen rows. Per ticket the journal is NOT behind at all —
+  // journalLag(): eleven sealed LINES holding ten ticket ids (w1 is sealed twice; the first seal is the
+  // seal) against eighteen rows, seventeen of them settled. Per ticket the journal is NOT behind at all —
   // and seven tickets are sealed under a close that has since been superseded.
-  journal: { entries: 10, settledRowsInCanon: 17, settledTicketsInCanon: 10, missing: 0, sealedUnderSuperseded: 7,
-    base: { journalRows: 10, settledInCanon: 17, missing: 0 } },
+  journal: { entries: 11, settledRowsInCanon: 17, settledTicketsInCanon: 10, missing: 0, sealedUnderSuperseded: 7,
+    base: { journalRows: 11, settledInCanon: 17, missing: 0 } },
+  /**
+   * trade-postmortem.js, on the R21-premium strategy line and the day-clustering line. Per ROW the sleeve
+   * is 14 trades at -8.2R (6 settles + 6 voided closes + s1's two rows); per TICKET it is 7 at -1.2R.
+   *   -1.5R (the six settles: 3 x +0.25 and 3 x -0.75) + 0.3R (s1) = -1.2R
+   *   -1.2R + 6 x (-1.0R) (the voided closes) + (-1.0R) (s1's superseded close) = -8.2R
+   */
+  tradePostmortem: { base: { sleeveN: 14, sleeveTotR: -8.2, trades: 17, days: 4 },
+    staged: { sleeveN: 7, sleeveTotR: -1.2, trades: 10, days: 2 } },
+  /** skip-filter-monitor.js: clean signal settles carrying obs. The wings carry obs, so each counted twice. */
+  skipFilter: { base: { n: 14 }, staged: { n: 7 } },
+  /**
+   * THE NOTE ON THE SUPERSEDED ROW ONLY (tagNoNote). The surviving wing close carries the void tag but no
+   * retireNote; only the superseded row has the note. reconcile.js's retire rule counts a tag only when a
+   * row carries BOTH the tag and a note AND the tag is in the registry — so WHICH ROWS that is computed
+   * over decides the answer, and it must be the collapsed ones:
+   *   staged (over the collapsed rows): no surviving row has a note, so the tag counts for nothing and each
+   *     wing counts ONCE — n 9, the wings -$600, nothing excluded
+   *   base (over every row): the superseded rows' notes validate the tag, which then excludes BOTH rows of
+   *     every wing — n 4, the wings $0, twelve rows excluded. Counted twice, then not at all.
+   */
+  tagNoNote: { staged: { n: 9, wingPnl: -600, retiredExcluded: 0, settled: 10 },
+    base: { n: 4, wingPnl: 0, retiredExcluded: 12, settled: 5 } },
   /**
    * THE INHERITED VOID TAG. The same ledger, except each surviving wing settle also carries the
    * predecessor's void tag. The collapse still makes each wing ONE ticket — but under a registry that
@@ -164,11 +218,11 @@ const EXPECT = Object.freeze({
 });
 
 /** write the whole scratch data directory for one variant */
-function writeData(dataDir, { order = "prepend", registry = "bare", withJournal = true, inheritedTag = false } = {}) {
+function writeData(dataDir, { order = "prepend", registry = "bare", withJournal = true, inheritedTag = false, tagNoNote = false } = {}) {
   fs.mkdirSync(path.join(dataDir, "ff-calendar"), { recursive: true });
   const w = (f, obj) => fs.writeFileSync(path.join(dataDir, f), JSON.stringify(obj, null, 1));
-  w("trade_log.json", ledger(order, { inheritedTag }));
-  w("board_positions.json", []);
+  w("trade_log.json", ledger(order, { inheritedTag, tagNoNote }));
+  w("board_positions.json", BOARD());
   w("board_tombstones.json", []);
   w("change-registry.json", changeRegistry(registry));
   w("ff-calendar/red-folders.json", redFolders());

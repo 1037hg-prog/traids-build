@@ -17,12 +17,24 @@
  * is gross of commissions/slippage, and n is small. This is DIAGNOSIS, not evidence.
  * The clean-era rerun of this script (weekly) is the actual improvement loop.
  *
+ * ONE ROW PER TICKET (2026-10-16). This file reads data/trade_log.json directly and summed ROWS: every
+ * section here — the era split, the exit anatomy, the exit-rule A/B, class x direction, strategy, the
+ * confidence quartiles, the day clustering and totR — counted a ticket once per row it has. Six R21
+ * weekly wings have TWO rows under ONE ticket id (loss-cap close voided for evidence, restored on the
+ * board under the same id, settled at expiry by a prepend that left the voided row in place), so each of
+ * them was counted twice: on this change's fixture "R21-premium n 14 ... tot -8.2R" where the truth is
+ * n 7, -1.2R. It now collapses to one row per ticket first (lib/ticket-rows.js) and says what that
+ * collapsed on its own second line. No-op on a ledger where no ticket id appears twice.
+ *
  * Usage: node backend/trade-postmortem.js
  */
 const fs = require("fs"), path = require("path");
+const { collapseByTicket, collapseLine } = require("./lib/ticket-rows.js");
 const CLEAN_EPOCH = new Date("2026-07-10T00:00:00").getTime();
 const raw = JSON.parse(fs.readFileSync(path.join(__dirname, "data", "trade_log.json"), "utf8"));
-const all = (Array.isArray(raw) ? raw : raw.log || []).filter(t => Number.isFinite(t.rMult));
+const rowsInFile = Array.isArray(raw) ? raw : raw.log || [];
+const collapse = collapseByTicket(rowsInFile);
+const all = collapse.rows.filter(t => Number.isFinite(t.rMult));
 const mean = a => a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0;
 const sd = a => { if (a.length < 2) return 0; const m = mean(a); return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - 1)); };
 const pad = (s, n) => String(s).padEnd(n);
@@ -33,7 +45,8 @@ const stat = (set, lbl) => {
     + pad("avg " + (mean(r) >= 0 ? "+" : "") + mean(r).toFixed(3) + "R", 13) + "tot " + (r.reduce((s, v) => s + v, 0) >= 0 ? "+" : "") + r.reduce((s, v) => s + v, 0).toFixed(1) + "R");
 };
 
-console.log(`\n  TRAIDS — Trade Post-Mortem · ${all.length} priced trades on file\n`);
+console.log(`\n  TRAIDS — Trade Post-Mortem · ${all.length} priced trades on file`);
+console.log(`  ledger: ${rowsInFile.length} rows · ${collapseLine(collapse)}\n`);
 
 // 1. era split
 console.log("  1) ERA SPLIT  (pre-fix outcomes are loss-biased by the resurrection bug — context, not evidence)");

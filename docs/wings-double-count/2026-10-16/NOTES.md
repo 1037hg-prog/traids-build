@@ -50,7 +50,7 @@ depends on whether someone remembered a registry row is not a counting rule.
 
 ---
 
-## 2. What changed — five files, all read-only analysis code
+## 2. What changed — seven files, all read-only analysis code
 
 Nothing here sends an order, calls a broker, writes a ledger row, or changes any registered test's rule,
 bar, population definition, statistic, universe or read condition.
@@ -110,6 +110,24 @@ happens to be written first, which is true of `options-settle.js` and `r24-sleev
 −$2,900 and −1.00R — the *voided* closes — against −$480 and −0.17R for the real ones. A **latent** defect,
 not an active one, and now keyed on the ticket id so the answer does not depend on the write order.
 
+### `backend/trade-postmortem.js`
+
+Found by the independent checker in cycle 1, not by the builder — it reads `trade_log.json` directly and
+summed **rows** in every section: the era split, the exit anatomy, the exit-rule A/B, class × direction,
+strategy, the confidence quartiles, the day clustering and `totR`. On the fixture the old code prints
+`R21-premium  n 14  win 29%  avg -0.586R  tot -8.2R` where the truth per ticket is `n 7, -0.171R, -1.2R`,
+and `17 trades settled on 4 days` where it is 10 on 2. Now collapses first and says so on its second line.
+
+### `backend/skip-filter-monitor.js`
+
+Also found by the checker. Its training sample is `log.filter(… && t.obs && !t.ctrl)` — no `cls` filter, and
+a wing carries `obs`, so each revoided wing entered the sample **twice**: the target `y`, the day-level mean
+R and the learning curve all counted it twice, and the 100-boundary gate counted **rows**, so duplicates
+could trip a boundary early. Now one row per ticket before any filter. **This is telemetry, not the
+adjudication** — the pre-registered run (n ≥ 2000, nested CV) is a different script and is not touched;
+collapsing can only *lower* n, so the gate stays conservative and a boundary already in
+`skip-filter-progress.json` is not re-run.
+
 ### `backend/integrity-audit.js`
 
 Sections 1–2 stay **per row** on purpose: an arithmetic audit must re-derive every row in the file,
@@ -142,13 +160,20 @@ reader on it, with no further edit:
   `backend/profit-program/skeptic-sleeves3.js`
 
 Changed directly, because they read `trade_log.json` themselves: `daily-postmortem.js`,
-`options-news-shadow.js`, `integrity-audit.js`.
+`options-news-shadow.js`, `integrity-audit.js`, `trade-postmortem.js`, `skip-filter-monitor.js`.
 
 Checked and left alone, with the reason: `options-settle.js` already groups rows by id and has its own
 `voidedRestore` test (it is the writer, not a report); `r28-shadow-read.js` reads R28 veto shadows, which
 these wings are not; `predictive-pipeline.js` is an ML feature pipeline, not a P&L report;
-`reconstruct-lost-week.js` writes `reconstructed: true` rows and never touches `trade_log.json`;
-`r24-sleeve.js` is a sleeve writer; `skeptic-sleeves3.js` already compares id **sets**.
+`reconstruct-lost-week.js` *reads* `trade_log.json` but writes only `reconstructed: true` rows and excludes
+`cls === "Options"`, so no wing reaches it; `r24-sleeve.js` is a sleeve writer; `skeptic-sleeves3.js`
+already compares id **sets**. `automation/` and `assessment-agents/` hold no direct reader — the two
+`seat-wave` scripts go through `cleanEraLedger()`.
+
+**This list was wrong once.** Cycle 1 shipped it as a complete census and the independent checker found two
+readers missing from it, `trade-postmortem.js` and `skip-filter-monitor.js`, both of them summing option
+wing P&L per row. Both are now fixed and tested. Read the list as "every reader found by two passes and an
+adversarial search", not as a proof of completeness.
 
 ### This BREAKS COMPARABILITY
 
@@ -189,6 +214,23 @@ cloud session's call. `journalLag()` now **names** the affected tickets
 (`journaledUnderSupersededClose`) so the condition is visible and the JSON is read for them instead.
 **For the operator:** decide whether the journal gets a superseding-entry convention (an appended entry
 that names the entry it replaces) or whether those seven tickets are listed as known exceptions.
+
+**b2. `backend/lib/feature-manifest.js` is not in this copy, so `skip-filter-monitor.js` cannot RUN here.**
+It is required at line 77 and that file is screened out of this clean copy, so
+`node backend/skip-filter-monitor.js` throws `Cannot find module './lib/feature-manifest.js'` — before this
+change and after it. The edit is verified by `node --check` and by the selftest, which runs the file against
+a **plainly-fake stub** (`boardObsBanned: () => []`) in a scratch repo; the stub is never reached by what is
+asserted, because the monitor prints its settle count and then returns at "under 100 settles".
+**For the operator:** run `node backend/skip-filter-monitor.js` once at home after applying, unstubbed, and
+check its new `ledger:` line and that the settle count reads as tickets.
+
+**b3. The too-good tripwire will read HIGHER, and that is the fix, not a bug.** The rows the collapse drops
+are voided loss-cap closes, all at `rMult −1`, so removing them can only push `integrity-audit.js`'s win
+rate **up**: on the fixture 31.3% → 55.6%. That file flags `winRate > 0.60` with "above 60% has ALWAYS been
+a bug here". Its **verdict and exit code are provably unaffected** — the verdict line is byte-identical
+between `base/` and `staged/`, and every fixture variant exits PASS — so the nightly chain cannot go red,
+but section 3 may newly print `INVESTIGATE` at home for a reason that is this repair. Check the ticket count
+before treating that as a new defect.
 
 **c. `backend/profit-program/pp-paper-legs.js` — THE FILE IS NOT IN THIS REPOSITORY.**
 The task asked for its hard-coded `TODAY_SESSION = "2026-10-09"` to be derived from the session calendar.
@@ -238,21 +280,21 @@ docs/wings-double-count/2026-10-16/
   lib.cjs    the shared manifest (sha256 per file), plan, drift refusal and write unit
   deploy.cjs --plan | --apply
   rollback.cjs --plan | --apply
-  selftest.cjs    232 known-answer checks on fixtures
+  selftest.cjs    315 known-answer checks on fixtures
   fixtures.cjs    the fixtures, and every expected number worked out by hand
-  mutants.cjs     18 deliberate breaks of the fix; each must be caught
+  mutants.cjs     25 deliberate breaks of the fix; each must be caught
   record.cjs --dry | (write)
   NOTES.md
 ```
 
-`backend/lib/ticket-rows.js` has **no base copy**: it does not exist at base. A rollback **deletes** it,
+Six files have a `base/` copy. `backend/lib/ticket-rows.js` has **no base copy**: it does not exist at base. A rollback **deletes** it,
 which is restoring it byte for byte.
 
 ### Run it
 
 ```
-node docs/wings-double-count/2026-10-16/selftest.cjs        # ends "ALL 232 CHECKS PASSED"
-node docs/wings-double-count/2026-10-16/mutants.cjs         # ends "ALL 18 MUTANTS KILLED"
+node docs/wings-double-count/2026-10-16/selftest.cjs        # ends "ALL 315 CHECKS PASSED"
+node docs/wings-double-count/2026-10-16/mutants.cjs         # ends "ALL 25 MUTANTS KILLED"
 node docs/wings-double-count/2026-10-16/deploy.cjs --plan   # read-only; sha256 now / base / staged per file
 node docs/wings-double-count/2026-10-16/rollback.cjs --plan # read-only
 node docs/wings-double-count/2026-10-16/record.cjs --dry    # the change-registry row and the ledger line
@@ -272,13 +314,22 @@ does have one — it refuses 13:50–15:50 MT on a trading day, when the close c
 
 ## 6. What the tests prove
 
-`selftest.cjs`, **232 checks**, no network, no broker, no real data file — every row is synthesized by
+`selftest.cjs`, **315 checks**, no network, no broker, no real data file — every row is synthesized by
 `fixtures.cjs` into a scratch repo under the OS temp directory and torn down after.
 
-* **A — the rule.** A clean ledger is an exact no-op (same array, same references). One ticket id is one
-  row, in either write order. The successor stamp wins where the latest-close tiebreak would lose (ticket
-  `s1`'s surviving close is the **earlier** one, so only rule (1) can get it right). An unexplained
-  duplicate is reported, with equal closes and with different ones. An id-less row passes through.
+* **A — the rule.** A clean ledger is an exact no-op: **the same row objects, in file order**. (The returned
+  `rows` is a new array — `rows !== input` — which is what cycle 1 overclaimed as "same array"; element
+  identity and order are what is asserted and what every caller depends on.) One ticket id is one row, in
+  either write order. The successor stamp wins where the latest-close tiebreak would lose (ticket `s1`'s
+  surviving close is the **earlier** one, so only rule (1) can get it right). An unexplained duplicate is
+  reported, with equal closes and with different ones. A falsy-but-present id (`0`, `false`) is still a
+  ticket id, an empty-string id is not, and ids are never coerced into each other (`1` ≠ `"1"` ≠ `"01"`,
+  `W1` ≠ `w1`). A row with no usable `closedAt` never beats one that has it. `supersedes()` refuses rows of
+  two different tickets. Three-row groups and stamp chains resolve. `pickRow`'s linear form is compared
+  against a **pairwise reference implementation on 4,000 randomized groups** — that, not a comment, is what
+  holds the O(k) rewrite to `supersedes()`'s own definition. 40,000 rows under one ticket id collapse in
+  linear time. Entries that are not rows at all are counted and called a damaged file. Frozen input is not
+  mutated, and the answer is deterministic.
 * **B — the canonical read, base against staged, on the same fixture, under both change registries.**
   Base counts the six wings twice (−$3,000; signal book −$3,280) where the retire rule does not happen to
   cover them; staged counts them once (−$600; −$380) under **either** registry and in **either** write
@@ -295,13 +346,13 @@ does have one — it refuses 13:50–15:50 MT on a trading day, when the close c
   −$480 both ways — base is right there only by the write order, staged in both).
 * **D — the package itself**: every staged file parses, every base copy is present, `base/` holds no
   `ticket-rows.js`, and each changed file genuinely differs from its base.
-* **E — the machinery, on a scratch repo**: at base the plan has no refusal and five files to write; a
-  failing gate refuses and writes nothing; apply writes all five to their staged sha256 and is idempotent;
-  rollback restores the four base files **byte for byte** and deletes the new one and is idempotent; a
+* **E — the machinery, on a scratch repo**: at base the plan has no refusal and seven files to write; a
+  failing gate refuses and writes nothing; apply writes all seven to their staged sha256 and is idempotent;
+  rollback restores the six base files **byte for byte** and deletes the new one and is idempotent; a
   drifted file refuses **both** directions and writes nothing; a changed file missing at home is refused,
   not created; `--plan`, no-mode and `record.cjs --dry` write nothing and exit as documented.
 
-`mutants.cjs`, **18 mutants, all killed.** A passing suite proves nothing about the suite, so each mutant
+`mutants.cjs`, **25 mutants, all killed.** A passing suite proves nothing about the suite, so each mutant
 breaks the staged code on purpose and the selftest must notice; a survivor fails the run. The first run
 had **three survivors**, each a real hole, and each is now closed:
 
@@ -322,6 +373,46 @@ existing check's meaning is `integrity-audit.js` section 3 now counting tickets 
 the defect being fixed, its before and after are both asserted, and the audit's **verdict condition is
 untouched**. Section 2b was added as a report rather than an impossibility precisely so that it cannot
 turn the nightly chain red.
+
+### The build-check loop, and where it stopped
+
+**Cycle 1.** Builder: `ticket-rows.js`, `reconcile.js`, `daily-postmortem.js`, `options-news-shadow.js`,
+`integrity-audit.js`; 232 checks, 18 mutants (three of which survived the first run and were closed, see the
+table above). An independent checker then ran every check command read-only, re-derived **74** of the
+asserted numbers with its own implementation (all 74 agreed), drove the package mechanics itself, and ran
+**22 mutants of its own**.
+
+**What the checker found, and what cycle 2 did with it:**
+
+| # | finding | cycle 2 |
+|---|---|---|
+| 1 | `trade-postmortem.js` sums option wing P&L per row — not fixed, not in §3's census | **fixed and tested** (n 14/−8.2R → n 7/−1.2R asserted both ways) |
+| 2 | `skip-filter-monitor.js` same, and its 100-boundary gate counts rows | **fixed and tested** (sample 14 → 7 asserted; stub caveat in §4b2) |
+| 3 | the `validRetireTags`-over-collapsed-rows claim had zero coverage | **covered**: the `tagNoNote` fixture variant, and a mutant that was surviving now dies |
+| 4 | a falsy-but-present `id` (`0`, `""`) defeated the fix silently | **fixed**: `hasId()`, with `""` reported as id-less; 8 new checks |
+| 5 | the `>` boundary in rule (2) was untested | **covered** (A5d) |
+| 6 | the non-finite-`closedAt` guard was untested | **covered** (A5e) |
+| 7 | `supersedes()` returned true across two different ticket ids | **fixed**: the same-ticket requirement is now checked, not assumed (A5f) |
+| 8 | the "same array" no-op claim was literally false | **wording corrected** here and in the selftest; element identity and order are what is asserted |
+| 9 | non-object entries were dropped and not counted | **fixed**: `notRows`, printed as "DAMAGED FILE" |
+| 10 | four report-content holes (the printed lines could be gutted) | **covered**: `collapseLine`'s exact text, section 2b's detail rows, and the file-row-count in both ledger lines |
+| 11 | the whole open-board path in `options-news-shadow.js` was untested | **covered**: the fixture now has real board rows, and `closedIds` is built after the sleeve filter so a closed row this report does not cover cannot hide a board row |
+| 12 | the journal's "first seal wins" was untested | **covered**: the fixture journal now seals `w1` twice |
+| 13 | `pickRow` was quadratic in the group size | **rewritten linear**, held to the old definition by a 4,000-group comparison against a pairwise reference |
+| 14 | the win rate rises, undisclosed | **disclosed** (§4b3) |
+| 15 | a stray empty `fixtures/` directory | removed |
+
+Cycle 2 ends at **315 checks and 25 mutants, all green**, with no check removed and none weakened: the
+counts only grew (232 → 315, 18 → 25). The `ambiguous` flag was widened from "the closes tie" to "the rule
+did not explain this duplicate" while closing finding 5 — more is reported, not less.
+
+**NOT YET DONE — the loop is paused here, not finished.** Cycle 2's work has not been through an
+independent checker. Before this is applied: run cycle 3, i.e. an independent checker over
+`trade-postmortem.js`, `skip-filter-monitor.js`, the linear `pickRow`, `hasId`, the `tagNoNote` fixture and
+the new `closedIds` sleeve filter, with its own arithmetic and its own mutants. Two of the checker's own
+mutants were judged **equivalent** rather than holes and are deliberately not covered: removing the
+`!closedIds.has(t.id)` filter in `options-news-shadow.js` (the `seen` set drops the same row anyway, on the
+prepend order) and `collapseLine`'s `slice(0, 6)` bound. A cycle-3 checker should re-judge both.
 
 ### Still to be looked at by a human
 

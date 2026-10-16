@@ -31,7 +31,11 @@ const coveredFrom = REC ? REC.coveredFrom || null : null;
 // the ledger's rows collapsed to one per ticket id FIRST (never by arrival order), then the open board rows of
 // tickets the ledger has not closed. closedCollapse is reported on the last line so the collapse is never silent.
 const closedCollapse = collapseByTicket(rd("trade_log.json"));
-const closedIds = new Set(closedCollapse.rows.map((t) => t.id).filter(Boolean));
+// the ids that COULD enter this report from the ledger — the sleeve filter is applied here too, so a board
+// position is dropped only when the ledger holds a closed row THIS REPORT would have counted. (Before, the
+// arrival-order dedupe saw only rows that had already passed the sleeve filter; this keeps that exactly.)
+const isSleeve = (t) => t && (t.strategy === "R25-0dte" || t.strategy === "R21-premium");
+const closedIds = new Set(closedCollapse.rows.filter(isSleeve).map((t) => t.id).filter(Boolean));
 const tickets = [...closedCollapse.rows.map((t) => ({ ...t, _state: "closed" })),
   ...rd("board_positions.json").filter((t) => t && (!t.id || !closedIds.has(t.id))).map((t) => ({ ...t, _state: "open" }))]
   .map((t) => ({ ...t, openedAt: t.openedAt || t.addedAt }))   // open positions carry addedAt, settled tickets openedAt

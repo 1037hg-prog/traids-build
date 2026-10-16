@@ -44,8 +44,20 @@ const near = (name, got, want, tol = 5e-5) => chk(name, Number.isFinite(got) && 
  * exactly as they are at home.
  * ───────────────────────────────────────────────────────────────────────────── */
 const CARRY = ["backend/lib/session.js", "backend/lib/atomic-write.js"];
-const UNDER = ["backend/lib/reconcile.js", "backend/daily-postmortem.js", "backend/options-news-shadow.js", "backend/integrity-audit.js"];
+const UNDER = ["backend/lib/reconcile.js", "backend/daily-postmortem.js", "backend/options-news-shadow.js",
+  "backend/integrity-audit.js", "backend/trade-postmortem.js", "backend/skip-filter-monitor.js"];
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "wings-double-count-"));
+/**
+ * backend/lib/feature-manifest.js is NOT in this code-only copy (screened out), so
+ * backend/skip-filter-monitor.js cannot be required here at all — before this change or after it. The
+ * scratch repo gets a plainly-fake stub returning an empty banned list. It is never reached by the checks
+ * below: the monitor prints its settle count and then returns at "under 100 settles", before any feature
+ * work. NOTES.md says the operator must run that file once at home, unstubbed, after applying.
+ */
+const FEATURE_MANIFEST_STUB = `"use strict";
+// FIXTURE STUB — not the real file. backend/lib/feature-manifest.js is not in this code-only copy.
+module.exports = { boardObsBanned: () => [] };
+`;
 
 /** a scratch repo holding `which` ("base" | "staged") copies of the files under test */
 function scratch(which, dataOpts) {
@@ -60,6 +72,7 @@ function scratch(which, dataOpts) {
   }
   // ticket-rows.js exists only in staged: a base scratch repo must NOT have it (base must not need it)
   if (which === "staged") fs.copyFileSync(path.join(PKG, "staged", "backend/lib/ticket-rows.js"), path.join(dir, "backend/lib/ticket-rows.js"));
+  fs.writeFileSync(path.join(dir, "backend", "lib", "feature-manifest.js"), FEATURE_MANIFEST_STUB);
   F.writeData(path.join(dir, "backend", "data"), dataOpts);
   return dir;
 }
@@ -102,6 +115,17 @@ console.log("A. the rule (lib/ticket-rows.js collapseByTicket)");
   eq("A1  clean ledger: nothing dropped", c.dropped.length, 0);
   eq("A1  clean ledger: tickets = rows", c.tickets, 3);
   eq("A1  clean ledger: the line says so", TR.collapseLine(c), "tickets 3 = rows (no ticket id appears twice)");
+  // the report line's CONTENT, not just its shape: the ids it names are how a reader finds the rows
+  {
+    const many = [];
+    for (let i = 1; i <= 8; i++) many.push({ id: `d${i}`, closedAt: 1, pnl: -1, voidForEvidence: true }, { id: `d${i}`, closedAt: 2, pnl: 1 });
+    const line = TR.collapseLine(TR.collapseByTicket(many));
+    eq("A1  the line names the duplicate ids, up to six, then an ellipsis", line,
+      "tickets 8 · 8 ticket id(s) held 16 rows: 8 superseded row(s) are NOT counted (ids d1, d2, d3, d4, d5, d6, …)");
+    const amb = TR.collapseLine(TR.collapseByTicket([{ id: "u", closedAt: 1 }, { id: "u", closedAt: 1 }]));
+    eq("A1  and the unexplained tail names them and says to look", amb,
+      "tickets 1 · 1 ticket id(s) held 2 rows: 1 superseded row(s) are NOT counted (ids u) · 1 UNEXPLAINED duplicate ticket id(s): u — the rule kept the latest close; look at them");
+  }
 
   // A2 a voided close and a later close of one ticket: one row, the later one
   const voided = { id: "w", closedAt: 10, pnl: -400, retired: "t", retireNote: "n", voidForEvidence: true };
@@ -146,6 +170,123 @@ console.log("A. the rule (lib/ticket-rows.js collapseByTicket)");
   eq("A5  id-less rows pass through", n.rows.length, 3);
   eq("A5  id-less rows counted", n.idless, 2);
   eq("A5  id-less rows are not tickets", n.tickets, 1);
+  eq("A5  entries that are not rows at all are COUNTED, not silently dropped", n.notRows, 2);
+  chk("A5  and said on the line", /2 entries in the file is not a row at all \(DAMAGED FILE\)/.test(TR.collapseLine(n)), TR.collapseLine(n));
+
+  // A5b a FALSY-BUT-PRESENT id is still a ticket id. `!r.id` is the obvious test and the wrong one: under
+  //     it two rows sharing id 0 both pass through and the ticket counts twice, silently.
+  const falsy = TR.collapseByTicket([{ id: 0, closedAt: 3 }, { id: 0, closedAt: 4 }, { id: false, closedAt: 5 }, { id: false, closedAt: 6 }]);
+  eq("A5b id 0 and id false are ticket ids: two tickets, two rows", falsy.rows.length, 2);
+  eq("A5b and they are counted as tickets", falsy.tickets, 2);
+  eq("A5b and the duplicates are reported", falsy.duplicates.length, 2);
+  eq("A5b and nothing is called id-less", falsy.idless, 0);
+  chk("A5b hasId: 0 and false are ids, '' / null / undefined are not",
+    TR.hasId({ id: 0 }) && TR.hasId({ id: false }) && !TR.hasId({ id: "" }) && !TR.hasId({ id: null }) && !TR.hasId({}));
+  const empty = TR.collapseByTicket([{ id: "", closedAt: 1 }, { id: "", closedAt: 2 }]);
+  eq("A5b an EMPTY-STRING id identifies nothing: id-less, reported", empty.idless, 2);
+  eq("A5b and never collapsed into one ticket", empty.rows.length, 2);
+
+  // A5c ids are never coerced into each other
+  const coerce = TR.collapseByTicket([{ id: 1, closedAt: 1 }, { id: "1", closedAt: 2 }, { id: "01", closedAt: 3 }]);
+  eq("A5c id 1, \"1\" and \"01\" are three tickets", coerce.tickets, 3);
+  eq("A5c and three rows", coerce.rows.length, 3);
+  const nocase = TR.collapseByTicket([{ id: "W1", closedAt: 1 }, { id: "w1", closedAt: 2 }]);
+  eq("A5c ids are case-SENSITIVE: two tickets", nocase.tickets, 2);
+
+  // A5d the boundary in rule (2): two voided closes at the SAME instant supersede nothing, and the
+  //     duplicate is reported. With >= instead of > they would supersede each other and go unreported.
+  const sameInstant = [{ id: "v", closedAt: 9, pnl: -1, voidForEvidence: true }, { id: "v", closedAt: 9, pnl: -2, voidForEvidence: true }];
+  const si = TR.collapseByTicket(sameInstant);
+  eq("A5d two voided closes at the same instant: one row", si.rows.length, 1);
+  chk("A5d and the duplicate is reported, not explained", si.ambiguous.length === 1 && si.ambiguous[0] === "v", si.ambiguous);
+  chk("A5d neither supersedes the other", TR.supersedes(sameInstant[0], sameInstant[1]) === false && TR.supersedes(sameInstant[1], sameInstant[0]) === false);
+
+  // A5e a row with NO usable close never beats a row that has one
+  const noClose = { id: "k", pnl: 1 }, withClose = { id: "k", closedAt: 7, pnl: 2 };
+  for (const [lab, arr] of [["no-close first", [noClose, withClose]], ["no-close last", [withClose, noClose]]]) {
+    const r = TR.collapseByTicket(arr);
+    chk(`A5e the row WITH a close is kept (${lab})`, r.rows[0] === withClose, r.rows[0] && r.rows[0].pnl);
+  }
+  for (const bad of [null, undefined, NaN, "2026-09-18", {}]) {
+    const r = TR.collapseByTicket([{ id: "z", closedAt: bad, pnl: 1 }, { id: "z", closedAt: 5, pnl: 2 }]);
+    eq(`A5e a non-numeric closedAt (${JSON.stringify(bad) ?? String(bad)}) never wins`, r.rows[0].pnl, 2);
+  }
+
+  // A5f supersedes() is a predicate about ONE ticket: it must refuse rows of two, whatever they carry
+  chk("A5f supersedes() is false across different ticket ids",
+    TR.supersedes({ id: "t", voidedPredecessor: "OTHER", restoredAfter: "T1" }, { id: "OTHER", retired: "T1" }) === false);
+  {
+    // two identical stamped twins each stamp the ticket and each carry the stamped tag, so each supersedes
+    // the other: the rule explains nothing, which is exactly what must be REPORTED rather than picked silently
+    const tw = [{ id: "s", voidedPredecessor: "s", restoredAfter: "T", retired: "T", closedAt: 4 }, { id: "s", voidedPredecessor: "s", restoredAfter: "T", retired: "T", closedAt: 4 }];
+    const r = TR.collapseByTicket(tw);
+    eq("A5f identical stamped twins: still one row", r.rows.length, 1);
+    chk("A5f and the duplicate is reported as unexplained", r.ambiguous.length === 1 && r.ambiguous[0] === "s", r.ambiguous);
+  }
+  {
+    const self = { id: "s", voidedPredecessor: "s", restoredAfter: "T", retired: "T", closedAt: 1 };
+    chk("A5f a row that is its own successor stamp supersedes nothing", TR.supersedes(self, self) === false);
+    eq("A5f and alone it is simply the ticket's row", TR.collapseByTicket([self]).rows.length, 1);
+  }
+  {
+    // a stamp naming another ticket must not reach across: both tickets keep a row
+    const across = TR.collapseByTicket([{ id: "a", voidedPredecessor: "b", restoredAfter: "T", closedAt: 1 }, { id: "b", retired: "T", closedAt: 2 }]);
+    eq("A5f a stamp naming ANOTHER ticket collapses nothing", across.rows.length, 2);
+    eq("A5f and both are tickets", across.tickets, 2);
+  }
+
+  // A5g three or more rows, and a chain of stamps
+  {
+    const v1 = { id: "m", closedAt: 1, pnl: -1, voidForEvidence: true }, v2 = { id: "m", closedAt: 2, pnl: -2, voidForEvidence: true }, real = { id: "m", closedAt: 3, pnl: 9 };
+    const r = TR.collapseByTicket([v1, v2, real]);
+    chk("A5g three rows, two voided: the real close is the ticket", r.rows.length === 1 && r.rows[0] === real);
+    eq("A5g and two rows are dropped", r.dropped.length, 2);
+    eq("A5g and nothing is unexplained", r.ambiguous.length, 0);
+    const c1 = { id: "c", retired: "T1", closedAt: 30 }, c2 = { id: "c", retired: "T2", voidedPredecessor: "c", restoredAfter: "T1", closedAt: 20 },
+      c3 = { id: "c", voidedPredecessor: "c", restoredAfter: "T2", closedAt: 10 };
+    const ch = TR.collapseByTicket([c1, c2, c3]);
+    chk("A5g a chain of three stamps keeps the last link, not the latest close", ch.rows.length === 1 && ch.rows[0] === c3, ch.rows[0] && ch.rows[0].closedAt);
+    eq("A5g and the chain is fully explained", ch.ambiguous.length, 0);
+  }
+
+  // A5h the linear rule must agree with the pairwise reference on randomized groups — this is what holds
+  //     pickRow's O(k) form to supersedes()'s own definition, rather than a comment claiming it does
+  {
+    let seed = 12345; const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const tags = [undefined, "T1", "T2"], closes = [undefined, NaN, 1, 2, 2, 3];
+    let disagree = 0, groups = 0, withDup = 0;
+    for (let t = 0; t < 4000; t++) {
+      const k = 2 + Math.floor(rnd() * 4), g = [];
+      for (let i = 0; i < k; i++) g.push({ id: "g", pnl: i,
+        closedAt: closes[Math.floor(rnd() * closes.length)],
+        ...(rnd() < 0.4 ? { retired: tags[Math.floor(rnd() * tags.length)] } : {}),
+        ...(rnd() < 0.4 ? { voidForEvidence: true } : {}),
+        ...(rnd() < 0.4 ? { voidedPredecessor: rnd() < 0.8 ? "g" : "other", restoredAfter: tags[Math.floor(rnd() * tags.length)] } : {}) });
+      const a = TR.pickRow(g), b = TR.pickRowPairwise(g);
+      groups++; if (a.dropped.length) withDup++;
+      if (a.at !== b.at || a.ambiguous !== b.ambiguous || a.dropped.length !== b.dropped.length) disagree++;
+    }
+    eq("A5h linear pickRow agrees with the pairwise reference on 4000 random groups", disagree, 0);
+    chk("A5h (and the groups were not all trivial)", groups === 4000 && withDup === 4000, { groups, withDup });
+  }
+
+  // A5i determinism and no mutation of the caller's data
+  {
+    const input = Object.freeze([Object.freeze({ id: "p", closedAt: 2, pnl: 1, voidForEvidence: true }), Object.freeze({ id: "p", closedAt: 3, pnl: 2 }), Object.freeze({ id: "q", closedAt: 1 })]);
+    const a = TR.collapseByTicket(input), b = TR.collapseByTicket(input);
+    chk("A5i frozen rows and a frozen array do not throw", a.rows.length === 2);
+    chk("A5i the same input gives the same answer", a.rows.every((r, i) => r === b.rows[i]));
+    chk("A5i the input array is untouched", input.length === 3 && input[0].pnl === 1 && input[1].pnl === 2);
+    chk("A5i the kept rows are the caller's own objects, in file order", a.rows[0] === input[1] && a.rows[1] === input[2]);
+  }
+
+  // A5j one ticket with many rows must not be quadratic: a malformed ledger may not look like a hang
+  {
+    const big = []; for (let i = 0; i < 40000; i++) big.push({ id: "one", closedAt: i, pnl: i });
+    const t0 = Date.now(); const r = TR.collapseByTicket(big); const ms = Date.now() - t0;
+    eq("A5j 40,000 rows under ONE ticket id collapse to one row", r.rows.length, 1);
+    chk(`A5j and in linear time (${ms} ms, bar 3000)`, ms < 3000, ms);
+  }
 
   // A6 the fixture ledger: same answer in either write order
   for (const order of ["prepend", "append"]) {
@@ -218,6 +359,18 @@ for (const registry of ["bare", "registered"]) {
   eq("B  staged: and the same n", a.L.n, b.L.n);
   eq("B  staged: and the same as under the other registry", a.signalPnl, E.signalPnl.perTicket);
 }
+// THE NOTE ON THE SUPERSEDED ROW ONLY: the surviving close carries the void tag, the superseded row carries
+// the retireNote. reconcile.js's retire rule must read the COLLAPSED rows, or a dropped row's note validates
+// a tag that then excludes the ticket's real close — counted twice, then not at all.
+for (const which of ["base", "staged"]) {
+  const w = E.tagNoNote[which], tag = `B  note on the superseded row only · registered registry · ${which}`;
+  const g = reconcileIn(scratch(which, { order: "prepend", registry: "registered", tagNoNote: true }));
+  eq(`${tag}: settled`, g.L.settled, w.settled);
+  eq(`${tag}: retired excluded`, g.L.retiredExcluded, w.retiredExcluded);
+  eq(`${tag}: signal n`, g.L.n, w.n);
+  eq(`${tag}: the six wings`, g.wingPnl, w.wingPnl);
+}
+
 // THE INHERITED VOID TAG: the collapse makes each wing one ticket; whether that one ticket counts at
 // all is the retired-row rule's answer, and the new known ambiguity says so instead of guessing.
 for (const registry of ["registered", "bare"]) {
@@ -259,6 +412,7 @@ for (const which of ["base", "staged"]) {
   const ns = /(\d+) sessions · mean/.exec(r.out);
   eq(`${tag}: session count in section 5`, ns && +ns[1], w.sessions);
   if (which === "staged") chk(`${tag}: says what it collapsed`, /ticket id\(s\) held 14 rows: 7 superseded row\(s\) are NOT counted/.test(r.out), /ledger: .*/.exec(r.out)?.[0]);
+  if (which === "staged") chk(`${tag}: and reports the FILE's row count, not the collapsed one`, new RegExp(`ledger: ${E.rowsInFile} rows · tickets ${E.tickets} `).test(r.out), /ledger: .*/.exec(r.out)?.[0]);
 }
 for (const which of ["base", "staged"]) {
   const dir = scratch(which, { order: "prepend", registry: "bare" });
@@ -277,6 +431,10 @@ for (const which of ["base", "staged"]) {
     eq(`${tag}: duplicate ticket ids reported`, j.duplicateTicketIds, w.duplicateTicketIds);
     eq(`${tag}: superseded rows not counted`, j.supersededRowsNotCounted, E.supersededRows);
     chk(`${tag}: section 2b printed`, /2b\. ROWS VS TICKETS/.test(r.out));
+    chk(`${tag}: section 2b names each duplicate ticket id and its closes`,
+      /^\s+w1\s+2 rows · counted close \d+ · superseded \d+$/m.test(r.out) && (r.out.match(/^\s+\S+\s+2 rows · counted close /gm) || []).length === E.duplicateTicketIds,
+      (r.out.match(/^\s+\S+\s+2 rows · counted close .*$/gm) || []).slice(0, 2));
+    chk(`${tag}: section 2b prints the FILE's row count`, new RegExp(`${E.rowsInFile} rows · tickets ${E.tickets} `).test(r.out));
     chk(`${tag}: and does not turn the verdict`, /VERDICT: PASS/.test(r.out));
   }
 }
@@ -294,6 +452,29 @@ for (const order of ["prepend", "append"]) {
     near(`${tag}: exposed wings' meanR`, wings.exposed.meanR, w.meanR);
     if (which === "staged") eq(`${tag}: ledger block says the duplicates`, j.ledger.duplicateTicketIds, E.duplicateTicketIds);
   }
+}
+for (const which of ["base", "staged"]) {
+  const dir = scratch(which, { order: "prepend", registry: "bare" });
+  const w = E.tradePostmortem[which], tag = `C  trade-postmortem · ${which}`;
+  const r = run(dir, "backend/trade-postmortem.js");
+  chk(`${tag}: ran`, r.status === 0, r.out.slice(0, 300));
+  const sleeve = /R21-premium\s+n (\d+)\s+win \d+%\s+avg [+-][\d.]+R\s+tot ([+-][\d.]+)R/.exec(r.out);
+  eq(`${tag}: the sleeve's ticket count`, sleeve && +sleeve[1], w.sleeveN);
+  near(`${tag}: the sleeve's total R`, sleeve && +sleeve[2], w.sleeveTotR, 0.05);
+  const clus = /(\d+) trades settled on (\d+) days/.exec(r.out);
+  eq(`${tag}: trades in the day-clustering line`, clus && +clus[1], w.trades);
+  eq(`${tag}: days in the day-clustering line`, clus && +clus[2], w.days);
+  if (which === "staged") chk(`${tag}: says what it collapsed, with the FILE's row count`, new RegExp(`ledger: ${E.rowsInFile} rows · tickets ${E.tickets} `).test(r.out), /ledger: .*/.exec(r.out)?.[0]);
+}
+for (const which of ["base", "staged"]) {
+  const dir = scratch(which, { order: "prepend", registry: "bare" });
+  const w = E.skipFilter[which], tag = `C  skip-filter-monitor · ${which}`;
+  const r = run(dir, "backend/skip-filter-monitor.js");
+  chk(`${tag}: ran (on a plainly-fake feature-manifest stub — see the top of this file)`, r.status === 0, r.out.slice(0, 300));
+  const n = /clean signal settles with observers: (\d+)/.exec(r.out);
+  eq(`${tag}: the training sample`, n && +n[1], w.n);
+  chk(`${tag}: it stops under 100 settles, as it always has`, /first run fires at n=100|Not at a new 100-boundary/.test(r.out), r.out.slice(-200));
+  if (which === "staged") chk(`${tag}: and says the sample is TICKETS`, /settles with observers: \d+ TICKETS/.test(r.out));
 }
 // the one that matters: base is right only by the write order, staged is right in both
 chk("C  options-news-shadow: base's answer DEPENDS on the write order (the latent defect)",
@@ -345,7 +526,7 @@ const badGate = { what: "stub gate that fails", run: () => ({ ok: false, why: "s
   const repo = baseRepo();
   const P0 = LIB.plan({ repo });
   eq("E1  at base: no refusal", P0.problems.length, 0);
-  eq("E1  at base: four files read base, one is new", P0.todoApply.length, 5);
+  eq("E1  at base: six files read base, one is new", P0.todoApply.length, 7);
   chk("E1  at base: ticket-rows.js is 'new'", P0.files.find((x) => x.isNew).state === "new");
   chk("E1  at base: atBase", P0.atBase === true && P0.applied === false);
 
@@ -359,7 +540,7 @@ const badGate = { what: "stub gate that fails", run: () => ({ ok: false, why: "s
   // apply
   const ap = LIB.make({ repo, log: () => {} }).writeUnit({ to: "staged", gate: okGate });
   eq("E3  apply: done", ap.result, "done");
-  eq("E3  apply: five files written", ap.written.length, 5);
+  eq("E3  apply: seven files written", ap.written.length, 7);
   for (const f of LIB.FILES) eq(`E3  apply: ${f.rel} is the staged bytes`, shaOf(path.join(repo, ...f.rel.split("/"))), f.stagedSha);
   const P1 = LIB.plan({ repo });
   chk("E3  apply: the plan now reads applied", P1.applied === true && P1.todoApply.length === 0);

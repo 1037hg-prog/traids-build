@@ -20,9 +20,22 @@
  * last recorded run (history in backend/data/skip-filter-progress.json). Scheduled daily;
  * self-gates to ~every 2-3 days at current fill rate.
  *
+ * ONE ROW PER TICKET (2026-10-16). The ledger read below summed ROWS. Six R21 weekly wings have TWO rows
+ * under ONE ticket id (loss-cap close voided for evidence, restored on the board under the same id,
+ * settled at expiry by a prepend that left the voided row in place), and they carry obs, so each entered
+ * this monitor's training sample TWICE: the target y, the day-level mean R and the learning curve all
+ * counted them twice, and the 100-boundary gate counted rows rather than tickets and so could trip early.
+ * The read now collapses to one row per ticket (lib/ticket-rows.js) before any filter. No-op on a ledger
+ * where no ticket id appears twice.
+ *   THIS IS TELEMETRY, NOT THE ADJUDICATION. The pre-registered adjudication run (n>=2000 clean settles,
+ *   nested CV) is a different script and is NOT touched here; no rule, bar, population definition or read
+ *   condition of it changes. Collapsing can only LOWER n, so the gate stays conservative: a boundary
+ *   already recorded in skip-filter-progress.json is not re-run.
+ *
  * Usage: node backend/skip-filter-monitor.js [--force]
  */
 const fs = require("fs"), path = require("path");
+const { collapseByTicket, collapseLine } = require("./lib/ticket-rows.js");
 const LOG_PATH = path.join(__dirname, "data", "trade_log.json");
 const PROG_PATH = path.join(__dirname, "data", "skip-filter-progress.json");
 const CLEAN_EPOCH = new Date("2026-07-20T00:00:00-06:00").getTime();
@@ -136,7 +149,10 @@ function gbm(X, y, idx, rounds = 80, lr = 0.1) {
 
 (function main() {
   const force = process.argv.includes("--force");
-  let log = []; try { log = JSON.parse(fs.readFileSync(LOG_PATH, "utf8")); } catch {}
+  let rowsInFile = []; try { rowsInFile = JSON.parse(fs.readFileSync(LOG_PATH, "utf8")); } catch {}
+  // one row per ticket id, before any filter (2026-10-16): a ticket closed twice is one training row
+  const collapse = collapseByTicket(rowsInFile);
+  const log = collapse.rows;
   // Overnight-bucket rows (entry stamped outside 09:25–16:00 ET) are a DIFFERENT experiment
   // — tracked in the ledger, excluded from the skip-filter sample so the training horizon
   // stays homogeneous. Derived from the entry timestamp, same rule as /api/intelligence.
@@ -153,7 +169,8 @@ function gbm(X, y, idx, rounds = 80, lr = 0.1) {
   let hist = []; try { hist = JSON.parse(fs.readFileSync(PROG_PATH, "utf8")); } catch {}
   const lastN = hist.length ? hist[hist.length - 1].n : 0;
   console.log(`\n  TRAIDS — SKIP-FILTER MONITOR · non-actionable learning-curve telemetry`);
-  console.log(`  clean signal settles with observers: ${n} · last monitored at n=${lastN} · adjudication stays at n≥2000\n`);
+  console.log(`  ledger: ${rowsInFile.length} rows · ${collapseLine(collapse)}`);
+  console.log(`  clean signal settles with observers: ${n} TICKETS · last monitored at n=${lastN} · adjudication stays at n≥2000\n`);
   if (!force && Math.floor(n / 100) <= Math.floor(lastN / 100)) {
     console.log(`  Not at a new 100-boundary yet (next run at n=${(Math.floor(lastN / 100) + 1) * 100}). Nothing to do.\n`);
     return;

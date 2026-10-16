@@ -43,9 +43,22 @@
  */
 "use strict";
 
-/** `a` supersedes `b`: both are rows of one ticket and `a` is the row that replaced `b`. */
+/**
+ * A ROW HAS A TICKET ID when it has one at all — `0` and `false` are ids, `undefined`, `null` and `""`
+ * are not. Written out because `!r.id` is the obvious test and the wrong one: under it a row with
+ * `id: 0` or `id: ""` is "not a ticket", so two such rows BOTH pass through and the ticket counts twice,
+ * silently, which is the exact defect this file exists to stop. An empty-string id is not a ticket id —
+ * it identifies nothing — and is counted as id-less and reported.
+ */
+const hasId = (r) => r.id !== undefined && r.id !== null && r.id !== "";
+
+/**
+ * `a` supersedes `b`: both are rows of ONE ticket and `a` is the row that replaced `b`.
+ * The same-ticket requirement is checked, not assumed — this is exported, and a predicate whose
+ * contract says "one ticket" must refuse rows of two.
+ */
 function supersedes(a, b) {
-  if (a === b) return false;
+  if (!a || !b || a === b || !hasId(a) || !hasId(b) || a.id !== b.id) return false;
   // (1) the successor stamp: the replacing row names the row it replaced and the tag it was restored after
   if (a.voidedPredecessor && a.voidedPredecessor === b.id && b.retired && a.restoredAfter === b.retired) return true;
   // (2) a close that was voided for evidence, replaced by a later close of the same ticket
@@ -54,17 +67,50 @@ function supersedes(a, b) {
 }
 
 /**
- * the rows of one ticket, in file order -> { row, dropped, ambiguous }. Chooses by POSITION, never by
+ * the rows of one ticket, in file order -> { row, at, dropped, ambiguous }. Chooses by POSITION, never by
  * object identity: two rows of a ticket may be the same object (an aliased list), and each still counts once.
+ *
+ * LINEAR IN THE GROUP, deliberately. Asking supersedes(a, b) for every pair is O(k^2), and a malformed
+ * ledger with one id repeated at scale would appear to hang (32k rows under one id took 2.5 s; 200k would
+ * take about 100). Both rules can be answered with one pass each, and give exactly the same answer as the
+ * pairwise form — which the selftest holds down by comparing the two on randomized groups, not by assertion:
+ *   rule (2)  b is superseded when b is voidForEvidence and SOME row of the ticket closed later, i.e. when
+ *             b.closedAt is finite and less than the greatest finite closedAt in the group.
+ *   rule (1)  inside a group every id is the ticket's own, so "a names b" is "a.voidedPredecessor is this
+ *             ticket and a.restoredAfter is b.retired". Count the restoredAfter tags of the rows that
+ *             stamp this ticket, and subtract b's own contribution so a row can never supersede itself.
  */
 function pickRow(group) {
   if (group.length === 1) return { row: group[0], at: 0, dropped: [], ambiguous: false };
-  const live = group.map((b, i) => i).filter((i) => !group.some((a) => supersedes(a, group[i])));
+  let maxClose = -Infinity;
+  const stampTags = new Map();                       // restoredAfter -> how many rows of this ticket stamp it
+  for (const r of group) {
+    if (Number.isFinite(r.closedAt) && r.closedAt > maxClose) maxClose = r.closedAt;
+    if (r.voidedPredecessor && hasId(r) && r.voidedPredecessor === r.id) stampTags.set(r.restoredAfter, (stampTags.get(r.restoredAfter) || 0) + 1);
+  }
+  const isSuperseded = (b) => {
+    // (1) another row of this ticket names b as the row it replaced
+    if (b.retired) { const n = stampTags.get(b.retired) || 0; const self = b.voidedPredecessor && hasId(b) && b.voidedPredecessor === b.id && b.restoredAfter === b.retired ? 1 : 0; if (n - self > 0) return true; }
+    // (2) b's close was voided for evidence and a later close of this ticket exists
+    if (b.voidForEvidence === true && Number.isFinite(b.closedAt) && maxClose > b.closedAt) return true;
+    return false;
+  };
+  const live = group.map((_, i) => i).filter((i) => !isSuperseded(group[i]));
   const pool = live.length ? live : group.map((_, i) => i);   // a rule that eliminated everything decides nothing
   let at = pool[0];
   for (const i of pool) { const r = group[i]; if (Number.isFinite(r.closedAt) && (!Number.isFinite(group[at].closedAt) || r.closedAt > group[at].closedAt)) at = i; }
   // AMBIGUOUS means the RULE did not explain the duplicate. More than one row surviving the supersede
   // rules is exactly that: the latest close then decided it, and a tiebreak is not an explanation.
+  return { row: group[at], at, dropped: group.filter((_, i) => i !== at), ambiguous: live.length !== 1 };
+}
+
+/** the pairwise form of pickRow's rules, kept as the REFERENCE the selftest compares the linear one against */
+function pickRowPairwise(group) {
+  if (group.length === 1) return { row: group[0], at: 0, dropped: [], ambiguous: false };
+  const live = group.map((_, i) => i).filter((i) => !group.some((a) => supersedes(a, group[i])));
+  const pool = live.length ? live : group.map((_, i) => i);
+  let at = pool[0];
+  for (const i of pool) { const r = group[i]; if (Number.isFinite(r.closedAt) && (!Number.isFinite(group[at].closedAt) || r.closedAt > group[at].closedAt)) at = i; }
   return { row: group[at], at, dropped: group.filter((_, i) => i !== at), ambiguous: live.length !== 1 };
 }
 
@@ -74,16 +120,19 @@ function pickRow(group) {
  *   duplicates  [{ id, rows, keptClosedAt, droppedClosedAt }] every ticket id that had more than one row
  *   dropped     the superseded rows themselves, so a caller can print or audit them
  *   ambiguous   the ticket ids whose extra rows the rule could not explain — REPORT THESE
- *   idless      how many rows carried no id (passed through, never collapsed)
+ *   idless      how many rows carried no ticket id (passed through, never collapsed)
+ *   notRows     how many entries were not objects at all (null, a number, a string) — dropped and COUNTED,
+ *               because a ledger holding one of those is a damaged file and nobody should learn it from a
+ *               silently shorter list
  */
 function collapseByTicket(rows) {
   const list = Array.isArray(rows) ? rows : [];
   const groups = new Map();                      // id -> the row INDEXES of that ticket, in file order
-  let idless = 0;
+  let idless = 0, notRows = 0;
   for (let i = 0; i < list.length; i++) {
     const r = list[i];
-    if (!r || typeof r !== "object") continue;
-    if (!r.id) { idless++; continue; }
+    if (!r || typeof r !== "object") { notRows++; continue; }
+    if (!hasId(r)) { idless++; continue; }
     const g = groups.get(r.id); if (g) g.push(i); else groups.set(r.id, [i]);
   }
   const keep = new Set(), duplicates = [], dropped = [], ambiguous = [];
@@ -96,16 +145,18 @@ function collapseByTicket(rows) {
       if (p.ambiguous) ambiguous.push(id);
     }
   }
-  const out = list.filter((r, i) => r && typeof r === "object" && (!r.id || keep.has(i)));
-  return { rows: out, duplicates, dropped, ambiguous, idless, tickets: groups.size };
+  const out = list.filter((r, i) => r && typeof r === "object" && (!hasId(r) || keep.has(i)));
+  return { rows: out, duplicates, dropped, ambiguous, idless, notRows, tickets: groups.size };
 }
 
 /** one line for a report: what the collapse did, or that it did nothing. Never silent. */
 function collapseLine(c) {
-  if (!c.duplicates.length) return `tickets ${c.tickets} = rows (no ticket id appears twice)`;
+  const damaged = c.notRows ? ` · ${c.notRows} entr${c.notRows === 1 ? "y" : "ies"} in the file is not a row at all (DAMAGED FILE)` : "";
+  if (!c.duplicates.length) return `tickets ${c.tickets} = rows (no ticket id appears twice)${damaged}`;
   const n = c.dropped.length;
   return `tickets ${c.tickets} · ${c.duplicates.length} ticket id(s) held ${n + c.duplicates.length} rows: ${n} superseded row(s) are NOT counted (ids ${c.duplicates.slice(0, 6).map((d) => d.id).join(", ")}${c.duplicates.length > 6 ? ", …" : ""})`
-    + (c.ambiguous.length ? ` · ${c.ambiguous.length} UNEXPLAINED duplicate ticket id(s): ${c.ambiguous.slice(0, 6).join(", ")} — the rule kept the latest close; look at them` : "");
+    + (c.ambiguous.length ? ` · ${c.ambiguous.length} UNEXPLAINED duplicate ticket id(s): ${c.ambiguous.slice(0, 6).join(", ")} — the rule kept the latest close; look at them` : "")
+    + damaged;
 }
 
-module.exports = { supersedes, pickRow, collapseByTicket, collapseLine };
+module.exports = { hasId, supersedes, pickRow, pickRowPairwise, collapseByTicket, collapseLine };
