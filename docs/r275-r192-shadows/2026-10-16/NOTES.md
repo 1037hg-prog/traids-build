@@ -174,9 +174,9 @@ removed. No file outside this package was touched.
 
 ## HANDOVER
 
-Handed over on 2026-10-16 at the operator's instruction, mid-loop. **The package is complete and its selftest
-passes; the independent check had been started and was NOT finished, so the build-check loop ran zero completed
-cycles.** Everything below is stated as it actually stands.
+Handed over on 2026-10-16 at the operator's instruction, mid-loop. **The package is complete, its selftest passes,
+and one independent check completed — but NO fix cycle was run against its findings.** The builder was stopped
+before acting on them. Everything below is stated as it actually stands.
 
 ### Done
 
@@ -205,15 +205,53 @@ cycles.** Everything below is stated as it actually stands.
 * **No existing test, rule, bar, population or read condition was changed, weakened, skipped or removed, and no
   test disappeared.** No file outside this package was touched.
 
+### The independent check — completed, NOT acted on
+
+A checker ran every check read-only against this code (commit `6ae8cf4`; the code files are byte-identical at
+`f6a9392`, which differs only in this NOTES.md). Its verdict: **pass, fixes recommended before apply, no blockers.**
+It re-ran all four check groups clean (`node --check` 7/7; selftest `ALL 52 CHECKS PASSED` twice, deterministic, no
+scratch left behind; the three read-only commands left the tree clean; `--apply` correctly refused on the clock
+fence, and under a Saturday clock with the real selftest gate it wrote all three files byte-exact, re-applied as a
+no-op, and rolled back keeping the records). It confirmed the AGENTS.md audit (no orders, no network in tests, no
+secrets, no personal details, JSON only through `writeJsonAtomic`, the chain never required, no registered rule,
+bar, population or read condition changed) and judged both rules faithful to their sealed reads and, for R192, to
+the registry entry.
+
+It ran **36 mutations and 30 were caught** — including every governance mutation it could construct (writing the
+registry, hardcoding the bar, injecting an order POST, writing outside the record, rewriting the record in place,
+and changing the cost, seed, window and population constants). **Six slipped through.** In each case the shipped
+code is correct; nothing in the selftest would notice if a later edit made it wrong:
+
+| missed | what was not caught | the gap |
+|---|---|---|
+| F1 | deleting a selftest check → `ALL 51 CHECKS PASSED`, exit 0, and the apply gate (`/^ALL \d+ CHECKS PASSED/`) still wrote the files | the count is derived, not pinned — AGENTS.md's "stop if the number of tests shrinks" is unenforced |
+| F2 | dropping R275's `d >= evidenceStart` (backfill), and `d < runDate` → `<=` (the lag rule) | no fixture ticket before `evidenceStart` or on the run date |
+| F3 | `PRIMARY = ["AGG","LQD"]` — dropping MUB | the registered three-fund population is checked neither by text nor by value, and the fixture funds are identical |
+| F4 | weakening the equal-weight primary's `prim.length === PRIMARY.length` guard | no fixture month is missing a primary fund |
+| F9 | dropping the `Number.isFinite(rMult/pnl)` settled guards, and the r192 read-out's `usable()` guard | one fixture each would cover both |
+
+It also raised two judgement calls worth deciding before apply: **F5** — a V2 wing whose `expiry` is `null` is
+silently classified *unexposed* instead of gapped (the sealed read guards this at `r275-release-filter.js:33`), and
+**F6** — V2 has no settle grace, so one wing that never settles holds its entry session's `wing-cell` forever, which
+makes the "the record never stalls" claim above true of V1 only. Plus nits: the ledger appends the whole batch in
+one call while its header argues for one short line (F7); HYG is not gated by `MIN_RETURNS`, giving a null contrast
+with no `why` (F8); `selftestGate` builds its path from the module constant rather than the injected `pkg` (F10);
+`writeExact` can leave a `.tmp-shadows-*` behind on failure (F11); a second run on the same ET date writes rows with
+no `run` row documenting them (F12); `record.cjs --dry` refuses before printing the records when
+`change-registry.json` is absent (F13); the start row's sha is taken at first run, not build time, and can be a
+silent `null` (F14); the shadow drops the sealed read's `LO`/`HI` event-date window, correct forward but undisclosed
+(F15); the bar fetch start and the per-month calendar calls grow without bound (F16); the sealed read's placebo p95
+index is one off R180's registered `ceil` convention — inherited, not introduced (F17); and `vetoShadow` rows are
+excluded only incidentally, via the `ctrl` flag they are conventionally written with (F18).
+
+**None of this was fixed. No fix cycle was run.** These are the checker's findings as reported; the builder did not
+independently verify them before being stopped.
+
 ### Left to do, in order
 
-1. **Finish the independent check.** A checker agent was started on commit `6ae8cf4` to re-run every check
-   read-only and to attempt 15 mutation tests (the exposure rule's `>`/`>=` and `<=`/`<` boundaries, the 2 bps cost,
-   `lastStart`, the >= 15 month filter, the placebo seed, the `5 * mean(o)` drift term, de-duplication and the
-   non-JSON throw in the ledger, backfilling past `evidenceStart` in both shadows, an injected order call, a write
-   outside the record, the Welch statistic, and dropping a selftest check to see the count shrink). **Its results
-   never arrived in this session, so no mutation was confirmed caught by an independent party.** Re-run it, or run
-   those mutations by hand, before trusting the selftest's coverage.
+1. **Close the six coverage gaps and decide F5 and F6** — the checker asked for F1, F2, F3, F4 (a pinned check count
+   plus four small fixtures) and a decision on F5 and F6 before the operator applies. All of them are selftest or
+   runner work in this package; none touches a registered rule, bar, population or read condition.
 2. **Verify R275's rule against the full registry entry at home** — "The one thing to check first" above. If the
    registry differs from `backend/r275-release-filter.js`, the shadow is recording the wrong rule: rebuild it from
    the registry, and change nothing to make a number come out.
