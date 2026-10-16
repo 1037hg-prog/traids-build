@@ -160,3 +160,75 @@ column — and the `record.cjs` rows, which are never removed: a rollback after 
   that reason.
 - **Kelly assumes a repeated bet with these returns as its distribution.** A per-unit mean over a few dozen units is a thin basis
   for that, which is why the shrunk pair is printed beside the point estimate and why the cap is 1.0.
+
+## HANDOVER
+
+Written 2026-10-16, when the session was told to stop. **The build-check loop was stopped after ONE builder pass; the
+independent checker's first cycle had been started and had NOT reported when this was written.** Nothing here has been checked by
+anyone but the builder. Read the "left to do" list before trusting any of it.
+
+### Done
+
+1. `staged/backend/lib/kelly.js` — new library. `kellyLine(returns, { conf = 0.80, round = 3 })` and `clusterReturnsOf(obj)`.
+   Full and half Kelly (mean over the sample variance, capped at 1.0, floored at 0; half is half of the **capped** value) and the
+   shrunk pair on the lower end of the mean's **two-sided** 80% CI (`mean − probit(0.90)·sd/√n`; the variance is not shrunk).
+   Pure, no I/O, never throws: bad input returns nulls and a `reason`.
+2. `staged/backend/progress-tests.js` — the shared read printer, with **one extra column** in the sealed-read table and nothing
+   else. Four edits: the `require`, two helpers (`rdOutput`, `kellyCell`), `<th>Kelly (descriptive)</th>`, and
+   `<td>${kellyCell(v)}</td>` plus `colspan` 3 → 4 on the empty-day row. `base/backend/progress-tests.js` is the byte-exact live
+   file it starts from.
+3. `deploy.cjs --plan | --apply` — drift refusal on both files (including DRIFT on the NEW file when home already has one),
+   clock / chain / process fences, the selftest as a gate, temp-file-and-rename writes read back by sha256, `node --check` after
+   each write, and full restore of every file on any failure. `rollback.cjs --plan | --apply` — the printer back from `base/`
+   byte for byte and `backend/lib/kelly.js` removed again. `record.cjs --dry` and the write. `sync-shas.cjs --check`.
+4. `selftest.cjs` — 96 checks on fixtures it builds in the OS temp folder. No network, no keys, no broker, no orders, no repo
+   write, and it cleans up after itself. Sections A–F as described above; section C is the byte-identity proof and section E the
+   mutation pass.
+5. `NOTES.md` — this file.
+
+### Checks that pass (builder's run, 2026-10-16, Node 22.22.0)
+
+| command | result |
+| --- | --- |
+| `node docs/kelly-column/2026-10-16/selftest.cjs` | **ALL 96 CHECKS PASSED**, exit 0 |
+| `node docs/kelly-column/2026-10-16/sync-shas.cjs --check` | every staged sha matches disk, exit 0 |
+| `node docs/kelly-column/2026-10-16/deploy.cjs --plan` | exit 0; `kelly.js` new, `progress-tests.js` base; the only fence firing is the 05:30–16:00 MT clock, which is correct for the hour it was run |
+| `node docs/kelly-column/2026-10-16/rollback.cjs --plan` | exit 0; nothing to put back |
+| `node docs/kelly-column/2026-10-16/deploy.cjs` (no args) | usage, exit 2 |
+| `node --check` on every file in the package | passes |
+| `node backend/test/stats.test.js`, `evalue.test.js`, `atomic.test.js`, `pipeline.test.js` | pass, exit 0 |
+| `node backend/lib/selection-luck.test.js` | passes |
+| `git status --porcelain` after running everything | only this package; no repo file written |
+
+Unchanged from baseline, and failing for want of data this clean copy does not carry (README.md says that is expected):
+`node backend/test/run.js` crashes in `verify.test.js` on the missing `backend/test/fixtures/nq-1m-2026-09-21.json`;
+`node docs/procedures/lint.cjs` reports `PROCEDURES FAIL (6 problems)` for the missing `docs/procedures/sources.json` and
+`automation/close-chain.cjs`. Neither is touched by this package.
+
+Two defects were found by the builder's own mutation pass and fixed before this commit: `record.cjs --dry` exits 2 in a clean
+copy (correct — `change-registry.json` cannot be read — the check was wrong, not the code), and the mutant that removes `esc()`
+from the Kelly cell is **undetectable**, so it was replaced by B18, which proves directly that the line needs no escaping.
+
+### Left to do, in order
+
+1. **Run the independent check cycle.** It was started and never reported. A second pair of eyes must run every command above,
+   re-derive the byte-identity claim with fixtures of its own (not this selftest's), and try its own mutants. Until then this
+   package has had one builder pass and no check pass, which is not what the house build-check loop requires.
+2. **Specifically ask the checker to attack these**, which the builder did not prove:
+   - fixture shapes the byte-identity proof has not met: a verdict containing the literal `</td></tr>`, `<td>`, `&mdash;` or
+     `colspan="4"`; a seal id or `unit` with HTML in it; a `verdict` that is `null`, a number or an object; a `read-seals.json`
+     whose `tests` is an array or `null`; a seal key of `__proto__` or `constructor`;
+   - whether `stripKellyColumn` in the selftest could **mask** a real difference rather than reveal one — construct a staged
+     printer that alters a verdict cell and confirm section C fails;
+   - the `rdOutput` guard against paths such as `data/x.json/../../y.json`, backslashes, percent-encoding and unicode;
+   - `clusterReturnsOf` against an inherited property rather than an own one.
+3. **Decide the one-sided / two-sided reading.** "the lower end of the mean's 80% confidence interval" is implemented as the
+   lower end of a **two-sided** 80% interval, `z = probit(0.90) = 1.2816`. If the operator meant a one-sided 80% bound, `z` is
+   `probit(0.80) = 0.8416` and every shrunk number here is too conservative. One line in `kelly.js` (`Z80`) and the B3/B4/B5/B8
+   expected values change. **This is a spec question, not a bug — ask before changing it.**
+4. **Re-run `sync-shas.cjs` and the selftest** after any change to a staged file, and re-stamp `deploy.cjs`.
+5. **Nothing is applied.** `deploy.cjs --apply` has never been run against a real tree, only against scratch repos in the
+   selftest. The operator applies at home, outside 05:30–16:00 MT and after the close chain, then `record.cjs --dry`, then
+   `record.cjs`.
+6. **Optional, not in this package:** have one or two reads seal their own per-unit series under `clusterReturns`, so the column
+   fills for more than the handful of reads whose output file already carries a recognised key. That is a change to those reads.
