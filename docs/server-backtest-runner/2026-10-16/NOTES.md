@@ -142,7 +142,7 @@ Cycle 4 result: no regressions and nothing blocking. The ceiling formula matched
 - **D-2 — gaps before the window.** Gaps are measured only from a year before `window.from` (the longest indicator lookback). Thin history long before the window no longer refuses a symbol; a case covers this.
 - **D-3 — exact bounds.** Cases now cover `lastBar` = to + 10 days accepted and to + 11 refused, `maxGapDays` 4 accepted and 3 refused, and an impossible `window.to` (now validated) refused.
 - **D-4 — `rsi-dip` conditions.** Series where each condition decides: `closeBelowSma` on a pullback in an up-trend, the trend filter letting an entry through, the `rsiAbove` exit, and the capped simulate (no entry after `to`, an open position listed).
-- **D-5 — calibration gates.** Each per-seed calibration row now records its gate inputs, and the selftest recomputes every verdict with `decideRule`, which pins each calibration gate on its own. The real verdict's positive-control wiring is pinned, as are the trades / months boundaries.
+- **D-5 — calibration gates.** Each per-seed calibration row now records its gate inputs, and the selftest recomputes every verdict with `decideRule`. *(Corrected after cycle 5: this does **not** pin each calibration gate on its own. In the fixtures no seed fails exactly one gate, so 8 of the 10 gate inputs could be forced to pass unnoticed. Every such mis-wiring would make reads HELD more often, never less: it is conservative.)* The real verdict's positive-control wiring is pinned, as are the trades / months boundaries.
 - **D-6 — drift-free arm fidelity.** The drift-free arm is now R313's: `controls.freeSeeds` (default 20) seeds numbered 1..N, demeaned. It is still reported only.
 - **D-7 — the shipped draft could never be held.** It now uses 61 drift-kept seeds, so its calibration can hold a read. This is a draft choice; registration confirms or changes it.
 - **D-8 / D-9:** `window.from` / `to` are real dates; the gate boundaries are tested.
@@ -154,6 +154,29 @@ Test edits, with reasons:
 - No case was removed (86 → 98).
 
 **This was the last fix cycle the build rules allow (5 checks: cycles 1–4 fixed, cycle 5 is the final check).**
+
+## Checker cycle 5 (the last allowed): no must-fix findings
+
+The cycle 5 check found no regressions and nothing that must be fixed before apply:
+
+- 98/98 passed, and no case was removed.
+- The declared edits were judged fair.
+- 46 of 72 mutants were killed. Every survivor is a test gap, an equality boundary or a fidelity detail. None is a wrong result from the code as written; the calibration wiring was read against R313's `judgeScramble`.
+
+Accepted and documented:
+
+- **The calibration gates are not individually pinned** (see the correction above). Surviving mis-wirings are conservative: more reads HELD.
+- **The leak test's "every seed" is not pinned.** No fixture has exactly one failing leak seed. The code is correct as read (`leak.every`).
+- **Each scramble's own placebo inputs are not pinned on their own.** That means the bars and the cost it is run on. The code is correct as read.
+- **An impossible `window.lastBar`** (for example 2018-02-30) passes `checkRule`. Harmless: bars are compared as strings, so it cuts like 02-28.
+- **A gap that straddles the gap-start date** (a year before `window.from`) is not measured. It lies in the indicator lookback only.
+- **Equality-only boundaries are untested:** t exactly at the bar, leak t = 2, the 0.05 cap, `>` vs `>=` on gaps and the trend filter. The operators match R313's.
+- **R313 fidelity details not pinned by tests:** floor seeds numbered 1..N, the defaults `freeSeeds` 20 and `maxGapDays` 14. The shipped rule sets 20 and 14 explicitly.
+
+Operator caveats:
+
+- Run the selftest at home, so the house-vs-port null-bar case is counted.
+- The registration must freeze the seed count (61 or otherwise) and the bar.
 
 ## Missing from this clean copy (not reconstructed)
 
