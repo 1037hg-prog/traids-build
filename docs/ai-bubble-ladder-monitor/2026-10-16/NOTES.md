@@ -1,0 +1,311 @@
+# AI-bubble ladder monitor (2026-10-16)
+
+A **read-only daily reading** of the AI-bubble contingency plan's de-risking ladder — its **B1** and **B2** levels —
+computed from stored daily closes. It prints a plain summary saying, for each rung, whether it is **ARMED**, with the
+value it read and the threshold that value was judged against, and with `--write` it puts that day's status under its
+own date key in one file of its own.
+
+It places **no orders of any kind**. It makes no network call and no broker call: it holds no HTTP client, no URL and
+no key, and the selftest proves that from the source. It reads no account and no position. The only thing it ever
+writes is `backend/data/ai-bubble-ladder-status.json`, and only when asked with `--write`.
+
+---
+
+## What the code pins, and what it does not
+
+The plan's own write-up — `docs/ai-bubble-contingency-plan-2026-10-07.md` — is a markdown file, so it is **not in this
+code-only copy of the repository**. Every rule below is therefore taken from the **code** of the 10-07 measurement
+lenses in `docs/ai-bubble-2026-10/`, line by line, and every rung carries the line it comes from in its own `source`
+field, printed by `--json` and stored in every written status.
+
+**What the code pins beyond doubt:** the two rules themselves (the daily 200-day ±2% band, the monthly 10-month flip),
+their exact arithmetic including which inequality is strict, which series each is measured on, and the dividend-adjusted
+close as the input. These are read from the lenses and from the live `backend/book-etf-rebalancer.js`.
+
+**What the code does not pin, and the operator should confirm against the write-up:** the *labels* `B1` and `B2`, and
+hence which of the two levels is which. The code shows two levels of the same ladder — a fast daily tripwire and a slow
+monthly flip — and this package calls the daily one B1 and the monthly one B2, because that is the order the plan's
+arithmetic script works in (`dalio-plan/plan-sizing.cjs:23-24` computes the tripwire; `plan-review/flip-levels.cjs`
+computes the month-end flip levels) and because a tripwire that reads every day sits below a rule that reads once a
+month. **If the write-up numbers them the other way round, swap the two `level` fields in `LADDER` and nothing else
+changes** — no threshold, no arithmetic, no test. `record.cjs` lists that confirmation under `owed`.
+
+Nothing here invents a threshold, a bar or a population. Where the code was silent the monitor reports **NOT READ**
+rather than guessing (see *Too little history*).
+
+---
+
+## The ladder
+
+| rung | level | what it reads | ARMED when | from |
+|---|---|---|---|---|
+| `B1-QQQ` | B1 | QQQ daily adj close vs its 200-day SMA, ±2% band | the band rule reads OUT | `bust/triggers.js:51-57`, `plan-sizing.cjs:24` |
+| `B1-SPY` | B1 | SPY, same rule | " | " |
+| `B1-SMH` | B1 | SMH, same rule | " | " |
+| `B2-QQQ` | B2 | QQQ month-end adj close vs the mean of the last 10 month-ends | that close ≤ the mean | `bust/triggers.js:50`, `flip-levels.cjs:12` |
+| `B2-SPY` | B2 | SPY, same rule | " | " |
+| `B2-CREDIT` | B2 | the VWEHX/VFITX ratio, same rule | " | `bust/triggers.js:50,83` (`d5`), `flip-levels.cjs:13-15` |
+
+### B1 — the daily 200-day ±2% band
+
+`bust/triggers.js:51-57` `dailyTrend(S, 200, 0.02)`, the signal it lists as `b2 200-day +/-2% band`:
+
+- The **first** reading, at the first session with 200 closes behind it, is the plain test `close > 200-day mean`.
+- From then on the band holds the previous reading: held → **out** only when `close < 0.98 × mean`; out → **held** only
+  when `close > 1.02 × mean`. In between, the reading carries forward unchanged.
+
+So the reading depends on the run of sessions before it, not on the last close alone, and the monitor rebuilds it from
+the first available session every time — it keeps no state file. `plan-review/precedent.cjs:9` prints the same two
+levels (`band exit 0.98*sma`, `band re-entry 1.02*sma`); `plan-sizing.cjs:23-24` calls it "the tripwire" and prints the
+band exit for QQQ, SPY and SMH, which is where the three B1 rungs come from.
+
+The summary shows the close, the 200-day mean, and **the level the current reading is judged against** — the arm level
+`0.98 × mean` while the rung is not armed, the disarm level `1.02 × mean` while it is — so the printed distance is the
+distance to the rung actually *changing*. The status also carries both levels, always.
+
+**Equality does not arm it.** `close < 0.98 × mean` is strict; a close exactly on the arm level leaves the rung as it
+was. `b1-equal` is the known-answer test for that.
+
+### B2 — the monthly 10-month flip
+
+`bust/triggers.js:45-50` `tenMonth`: judged at **month-ends only** and carried forward over the days between — IN iff
+the month-end close is **strictly above** the mean of the last 10 month-end closes **including the current one**. The
+same rule, in the same words, is in `plan-review/flip-levels.cjs:1-2`, `dalio-plan/trend-lag.cjs:3-5`,
+`dalio-hedge/trend-status.cjs:3-4`, and live in `backend/book-etf-rebalancer.js:64`.
+
+**Equality arms it**, because IN requires *strictly* above. `b2-equal` is the known-answer test for that.
+
+A session is a month-end iff it is not the last session of the series and the next session falls in a different
+calendar month (`bust/triggers.js:41` `isME`, `bust/now.js:8` `monthEnds`). **The last session is therefore never a
+month-end** — the current month is still forming — so B2 reads the *last completed* month-end, exactly as the lenses
+do. Beside it the monitor prints the **provisional** reading (`bust/now.js:15`): the forming month replaced by the
+latest close, judged against the **flip level X\***, the mean of the 9 completed month-ends
+(`plan-review/flip-levels.cjs:8`). That is the level the next month-end close will be judged against.
+
+---
+
+## The data it reads
+
+Dividend-adjusted daily closes — the `a` field — from a store of one `<SYM>.json` per symbol, rows `{ d, c, a }`:
+exactly the cache `docs/ai-bubble-2026-10/bust/fetch.js` writes, which is the default store (`--data <dir>` points it
+elsewhere). **The monitor never fetches anything**; that fetcher fills the cache, at home. Symbols needed: `QQQ`,
+`SPY`, `SMH`, `VWEHX`, `VFITX`.
+
+- Rows with no finite `a` are dropped, as `bust/now.js:6` drops them. Rows out of order are sorted first. **Two rows
+  for one date is refused** — never silently taken twice.
+- `--as-of YYYY-MM-DD` is the lenses' `CUT` (`bust/triggers.js:22`): sessions after it are not read.
+- **One missing or unreadable series stops the whole run** (exit 1, nothing computed). There is no half ladder.
+- The status's **date** is the *oldest* last session over the store, and every series is trimmed to it, so one rung
+  never speaks for a later day than another. A series that lags is named on its own line.
+- The ratio series is taken only on the dates **both** series have (`flip-levels.cjs:13-14`).
+
+### Too little history
+
+A rung whose series cannot carry its rule — fewer than 200 closes, fewer than 10 completed month-ends — is reported
+**NOT READ**, with `armed: null` and a note saying which. It is never reported "not armed": a rung that was not read is
+not a rung that is quiet. The run still ends 0.
+
+---
+
+## The files
+
+```
+docs/ai-bubble-ladder-monitor/2026-10-16/
+  NOTES.md                                        this
+  base/NO-BASE-FILES.md                           why base/ is empty (both shipped files are new)
+  staged/backend/ai-bubble-ladder.js              the rungs as arithmetic; reads series files, writes nothing
+  staged/backend/ai-bubble-ladder-monitor.js      the daily reading; prints, and with --write writes one file
+  deploy.cjs   --plan | --apply                   creates the two files (also the shared engine rollback.cjs uses)
+  rollback.cjs --plan | --apply                   removes them again (their base is "not there")
+  selftest.cjs                                    467 checks on synthetic closes; ends ALL <n> CHECKS PASSED
+  mutants.cjs  [<id>...] | --list                 36 deliberate breaks, each against the checks that must catch it
+  fixtures/specs.cjs                              the synthetic populations, as specs, with every derivation
+  fixtures/make.cjs                               materialises one to a directory, to look at or run by hand
+```
+
+`staged/` holds the two files at their repo paths; `base/` is empty because neither exists at home yet (see
+`base/NO-BASE-FILES.md`). Nothing in `staged/` reads anything under `fixtures/`, `selftest.cjs` or `mutants.cjs`.
+
+### The commands
+
+```
+node backend/ai-bubble-ladder-monitor.js                      the reading. Writes nothing.
+node backend/ai-bubble-ladder-monitor.js --write              the same, and the day's status in backend/data/
+node backend/ai-bubble-ladder-monitor.js --as-of 2026-10-06   read as if that were the last session
+node backend/ai-bubble-ladder-monitor.js --json               the whole status document instead of the summary
+node backend/ai-bubble-ladder-monitor.js --data <dir>         read a different store (e.g. a fixture)
+```
+
+Exit 0 computed (and written) · 1 a series could not be read, or the write failed · 2 usage.
+
+### The status file
+
+`backend/data/ai-bubble-ladder-status.json`, written only with `--write`, through
+`backend/lib/atomic-write.js` `writeJsonAtomic` — never with a shell redirection, a heredoc or a bare `writeFileSync`:
+
+```
+{ "spec": "ai-bubble-ladder-status-v1", "updatedAt": "...", "dates": ["2026-10-05", "2026-10-06"],
+  "days": { "2026-10-06": { date, computedAt, cut, dataDir, series, behind, rungs: [ ... ], armed, armedCount,
+                            available, unavailable, readOnly: true, summary: [ ... ] } } }
+```
+
+One key per date. A run **replaces that day's key and keeps every other date byte for byte**; running the same day
+twice writes the same document. A status file that does not parse is **never replaced**: the run refuses (exit 1) and
+says so, because an unreadable file may be holding readings nobody has copied yet.
+
+---
+
+## How it was proven
+
+`node docs/ai-bubble-ladder-monitor/2026-10-16/selftest.cjs` → **ALL 467 CHECKS PASSED**.
+`node docs/ai-bubble-ladder-monitor/2026-10-16/mutants.cjs` → **ALL 36 MUTANTS KILLED**.
+
+Both make no network call, no broker call and no real-data read, and write nothing outside a scratch directory they
+make and remove. The selftest copies the two staged files into a scratch `backend/` beside a copy of
+`backend/lib/atomic-write.js` and a `package.json` with no `"type"` field — which is what `backend/package.json` is, so
+they run there exactly as they will at home (the **root** `package.json` says `"type": "module"`, so a `.js` file left
+under `docs/` would be read as an ES module, and these two are CommonJS).
+
+### Known answers, two ways
+
+Every rung of every fixture is checked twice over:
+
+1. **Designed numbers.** Each fixture is built so the arithmetic can be done by hand, and the numbers are typed into
+   the selftest as literals — never read back out of the code. The derivations are in `fixtures/specs.cjs`; here they
+   are again:
+
+   | fixture | the series | the arithmetic | the answer |
+   |---|---|---|---|
+   | `b1-cross` | QQQ: 199 sessions at 90, then 100s, **last session 97** | mean `(199×100 + 97)/200 = 99.985`; arm level `0.98 × 99.985 = 97.9853` | `97 < 97.9853` → **B1-QQQ ARMS**, and it was *not* armed the day before (window all 100, mean 100, arm level 98). **A crossing day.** |
+   | `b1-no-cross` | the same, **last session 98** | mean `99.99`; arm level `97.9902` | `98 > 97.9902` by `0.0098` → **no arm**. **A no-crossing day**, one tick above. |
+   | `b1-equal` | QQQ: 199 at 9000, then 9951s, **last 9751** | mean `(199×9951 + 9751)/200 = 9950` exactly; arm level `0.98 × 9950 = 9751` exactly | `9751 < 9751` is false → **no arm**: equality does not arm. |
+   | `b2-cross` | QQQ months `100,101,…,122`, **last completed month-end 100** | last 10 month-ends incl. it `= (114+…+122 + 100)/10 = 116.2` | `100 ≤ 116.2` → **B2-QQQ ARMS** at that month-end; the one before did not (`122` vs `(113+…+122)/10 = 117.5`). **A crossing month-end.** |
+   | | SPY months `100,…,122`, **last 140** | `(1062 + 140)/10 = 120.2` | `140 > 120.2` → **no arm** on the same month-end: the ladder reads rung by rung. |
+   | `b2-no-cross` | QQQ, **last 119** | `(1062 + 119)/10 = 118.1` | `119 > 118.1` by `0.9` → **no arm**. **A no-crossing month-end.** |
+   | `b2-equal` | QQQ, **last 118** | `(1062 + 118)/10 = 118.0` exactly | `118 ≤ 118` → **ARMS**: equality arms, because IN needs strictly above. |
+   | `short` | 113 sessions over 6 calendar months | neither rule can be read | **every rung NOT READ** — not one reported "not armed". |
+   | `lag` | `b1-cross`, but VFITX stops `2026-09-25` | the one day every series reaches is `2026-09-25` | the whole ladder is read as of that day, the lagging series is named, and **B1-QQQ is not armed** — its arming close is past the read window. |
+   | `credit-gap` | VFITX missing `2026-05-29` and `2026-06-10` | the ratio is taken only on dates both have | its May month-end is `2026-05-28`; no session is ever divided by a price that is not there. |
+
+   **Why the B1 fixtures start low.** The band's first reading, before it has a state to hold, is the plain
+   `close > mean`. On a series flat for ever that is `100 > 100` = false, so such a series reads ARMED from its first
+   reading and never leaves — and a "crossing day" built on it would prove nothing, because the rung was already armed
+   the day before. Every B1 fixture therefore opens with 199 sessions at a lower level, so the first reading is plainly
+   IN, the band holds it there through the flat run, and the last session is the one under test. (That property itself
+   is a known-answer check: a flat 200-close series reads ARMED, and a flat run of month-ends sits exactly on its
+   10-month mean, which arms B2 — which is why B2-QQQ and B2-SPY read ARMED in the B1 fixtures.)
+
+2. **An independent re-derivation.** `refBand` and `refTenMonth` in the selftest are a second implementation of the two
+   rules, written from `bust/triggers.js:41,44-57` and `:45-50` in a different style and sharing no code with the
+   staged files. Every rung of every fixture must agree with them, on ARMED, on the value, on the threshold and on the
+   flip level.
+
+### What else the selftest proves
+
+- **Read-only by construction.** The staged sources carry no `fetch(`, no `http`/`https`/`net`/`tls` require, no URL,
+  no `writeFileSync`/`appendFileSync`/`renameSync`/`unlinkSync`/`mkdirSync`, no `child_process`, no spawn and no exec;
+  they require nothing but `fs`, `path` and the one `atomic-write` helper; and the library does not even load that.
+  No order-placing surface: no `/v2/orders`, no broker host, no `APCA-API`, no `time_in_force`, no `qty`, no key names.
+- **No network.** The monitor runs to completion with `global.fetch` poisoned to throw.
+- **It writes nothing unless told.** Every file under the scratch tree is hashed before and after: a run without
+  `--write` changes **nothing at all**, and never reaches the write path; a run with `--write` changes **exactly one**
+  file, leaves no `.tmp-` behind, and says which file it wrote and that nothing else was.
+- **The dated status.** One key per date; the same day twice is idempotent; a second day joins the first and the first
+  is kept byte for byte; re-running a day replaces only that day; an unparseable status file is never replaced; a
+  failed write ends 1 with nothing written.
+- **The summary.** Plain text only — no escape codes, no box drawing. Every rung on its own line, with ARMED or
+  "not armed", its value and its threshold; each B2 line also carries the provisional reading and the flip level; the
+  count of armed rungs by name; and the two lines saying this is a reading and no order was placed.
+- **Bad input.** A missing store, a missing symbol, null closes, duplicate dates, rows out of order, the wrong price
+  field, a bad `--as-of`, an unknown argument.
+- **The package.** `deploy.cjs` pins the sha256 of each staged file; plan → apply → idempotent second apply →
+  rollback → idempotent second rollback; a DRIFT file refuses both write modes and is never deleted; every fence
+  (the close-chain window, each busy process, this process not counting, an unrelated process not counting, an
+  unreadable process list failing closed); a gate that fails writes nothing; the gate passes only on exit 0 **and**
+  `ALL n CHECKS PASSED` as the last line of stdout, never on stderr; a failed write removes every file the run
+  created; `record.cjs --dry` has every write behind its `DRY` return.
+
+### The mutation check
+
+`mutants.cjs` serves the selftest 36 deliberately broken copies of the staged files, through the one env override
+`AI_BUBBLE_LADDER_SELFTEST_STAGED` (`staged/` is never touched, and `deploy.cjs` **strips that variable from the
+gate's child**, so the gate always judges the real bytes). A mutant counts as killed only when the selftest fails
+**and** one of the checks named for it is among the failures — a mutant that merely knocks something unrelated over is
+reported as *caught by the wrong check*, not as killed. The breaks include: arming on equality and not arming on
+equality, in both rules; the band's two levels swapped; the band dropped; the first reading's inequality; a 199-day
+mean; a 9-month mean; the current month-end left out of its own mean; the forming month counted as a month-end; the
+flip level taken over 10 month-ends; the price close read instead of the adjusted one; `--as-of` ignored; duplicate
+dates taken twice; the ratio taken on unaligned dates; a missing series skipped; the status dated the newest day; a
+longer series not trimmed; an unread rung reported "not armed"; a write on a read-only run; a failed write reported as
+a success; a bare `writeFileSync` in place of `writeJsonAtomic`; and a summary line missing its threshold or its
+ARMED word.
+
+Three cycles were run. Cycle 1 left 9 mutants alive or caught by the wrong check; the fixes were **to the selftest and
+the fixtures, never to a rule**:
+
+| what cycle 1 found | the fix |
+|---|---|
+| The first B1 fixtures were flat at 100, so the rung was **already armed** the day before the "crossing day" — the crossing day proved nothing. | The B1 fixtures now open with 199 lower sessions, so the first reading is IN. The flat-series behaviour became a known-answer check of its own. |
+| Nothing exercised the first reading sitting *exactly* on its mean. | A check that a flat 200-close series reads ARMED. |
+| `tenMonthTrend`'s own inequality was untested: only the rung's separate `armed` test was. | `b2-equal` now asserts `armedSince` is the equality month-end itself, and every rung is checked for `armed` ⇔ exactly one of `armedSince`/`notArmedSince`. |
+| Nothing had a **gap** in the denominator series, so unaligned ratio dates never bit. | The `credit-gap` fixture. |
+| Two mutants ended the selftest with a **throw**, hiding every check after it. | Every group now runs inside `T()`, which turns a throw into a named FAIL and carries on; the monitor-run helper turns a throw into an answer; the month-end check no longer indexes past the end. |
+| One mutant was equivalent (it changed no behaviour). | Replaced with two that do: the B1 and B2 availability guards ignored. |
+| Four `kills` regexes named too narrow a check. | Widened to the checks that actually catch each one. |
+
+Cycles 2 and 3 (the second run of the loop, and the independent checker's re-run) found no survivor:
+**ALL 36 MUTANTS KILLED**, **ALL 467 CHECKS PASSED**.
+
+### Test edits
+
+**None.** No test's rule, bar, population or read condition was changed to make anything pass, in this package or
+anywhere else. Every check and every fixture here is new; the fixture changes above were made to *strengthen* the
+population (a flat series that proved nothing was replaced by one that does), each time adding a known answer rather
+than removing one. No test was weakened, skipped or deleted, and no registered test is touched: this package adds two
+new files and changes none.
+
+---
+
+## Deploying it
+
+```
+node docs/ai-bubble-ladder-monitor/2026-10-16/deploy.cjs --plan     read-only: each file's state, and the fences now
+node docs/ai-bubble-ladder-monitor/2026-10-16/deploy.cjs --apply    the write mode
+```
+
+`--apply` refuses, and writes nothing, if: either file is **DRIFT** (there, and not the staged bytes) or a staged copy
+is not the sha256 pinned in `deploy.cjs`; the clock is inside **13:50–15:50 MT on a trading weekday** (the close chain
+owns `backend/` then); either file of the unit or `automation/close-chain.cjs` is in the process list; the process list
+cannot be read (fail-closed); or the selftest does not end `ALL n CHECKS PASSED` on exit 0. It asks the fences again
+after the gate. Each file is written with a temp file and a rename, read back by sha256 and `node --check`ed; any
+failure removes every file the run created.
+
+It never requires `automation/close-chain.cjs` (it only looks for it in the process list), never touches
+`backend/data`, the registry, the chain file, a switch or the server, and makes no network or broker call. The live
+bytes are the whole state: this package keeps no state file.
+
+### After the apply
+
+1. `node backend/ai-bubble-ladder-monitor.js` — the reading, writing nothing. Compare it with
+   `node docs/ai-bubble-2026-10/bust/now.js` over the same store: the same rules from the same cache, so the 200-day
+   and 10-month lines should agree.
+2. `node backend/ai-bubble-ladder-monitor.js --write` — the day's status in `backend/data/`.
+3. `node docs/ai-bubble-ladder-monitor/2026-10-16/record.cjs --dry`, then without `--dry`, outside 13:50–15:50 MT on a
+   trading weekday.
+4. Confirm the `B1`/`B2` labels against the plan's write-up (see *What the code pins*). If they are the other way
+   round, swap the two `level` fields in `LADDER` — nothing else changes.
+
+**Nothing to restart, and nothing schedules it.** No running program requires these files and nothing was added to the
+close chain: the monitor runs when the operator runs it. If it should run nightly, that is a separate change to the
+chain, deliberately not in this package.
+
+### Rolling back
+
+```
+node docs/ai-bubble-ladder-monitor/2026-10-16/rollback.cjs --plan | --apply
+```
+
+Both files are removed, which is their base. It refuses the whole unit if either is DRIFT, so it never deletes a file
+it does not recognise, and it has the same fences. It leaves `backend/data/ai-bubble-ladder-status.json` — the
+operator's own readings — where it is. If `record.cjs` has written its registry row, that row stays on record; it is
+undone by hand, not by this script.
