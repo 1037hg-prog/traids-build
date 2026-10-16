@@ -14,11 +14,24 @@
  *   CORRUPTION — the bug altered a recorded value. Can fabricate an edge. Far more dangerous.
  *
  * Wired into the nightly close chain so this is a standing check, not a one-off reassurance.
+ *
+ * ROWS VS TICKETS (2026-10-16, the wings double count). Sections 1 and 2 are per-ROW on purpose: an
+ * arithmetic audit must re-derive every row in the file, including one that has since been superseded, or
+ * it stops auditing exactly the rows most likely to be wrong. Sections 3 onward count TICKETS, because a
+ * ticket closed twice under one id (six R21 wings: loss-cap close voided, restored under the same id,
+ * settled at expiry by a prepend that left the voided row in place) is one ticket, and counting it twice
+ * moved the too-good tripwire's n, win rate and mean. Section 2b says how many ticket ids hold more than
+ * one row. That is REPORTED, not an impossibility: those rows are legitimately in the file — what was
+ * wrong was every reader counting them. The verdict is unchanged by it, so the nightly chain cannot go
+ * red for a defect that is already handled.
  */
 const fs = require("fs"), path = require("path");
+const { collapseByTicket, collapseLine } = require("./lib/ticket-rows.js");
 const D = (f) => path.join(__dirname, "data", f);
 const log = JSON.parse(fs.readFileSync(D("trade_log.json"), "utf8"));
 const rows = Array.isArray(log) ? log : log.trades || log.rows || [];
+const collapse = collapseByTicket(rows);    // one row per ticket id; `rows` stays the whole file for sections 1-2
+const tickets = collapse.rows;
 const CLEAN = new Date("2026-07-20").getTime();
 const L = [];
 const say = (s) => { L.push(s); console.log(s); };
@@ -61,7 +74,7 @@ say(`   linear rows (Equity/Crypto/FX/Futures) re-derived: ${checked}`);
 say(`   ${rBad.length ? "FAIL" : "OK  "} rMult mismatches: ${rBad.length}${rBad.length ? " → " + JSON.stringify(rBad.slice(0, 3)) : ""}`);
 say(`   ${pnlBad.length ? "FAIL" : "OK  "} P&L mismatches:  ${pnlBad.length}${pnlBad.length ? " → " + JSON.stringify(pnlBad.slice(0, 3)) : ""}`);
 // Known open defect, quantified rather than hidden.
-const optSignal = rows.filter(r => r.cls === "Options" && r.openedAt >= CLEAN && Number.isFinite(r.rMult) && !r.ctrl && !r.ctrlRand && !r.vetoShadow).length;
+const optSignal = tickets.filter(r => r.cls === "Options" && r.openedAt >= CLEAN && Number.isFinite(r.rMult) && !r.ctrl && !r.ctrlRand && !r.vetoShadow).length;
 say(`   ${optUnverifiable.length ? "WARN" : "OK  "} options rows whose stored P&L cannot be re-derived from stored entry/exit/units: ${optUnverifiable.length}`);
 if (optUnverifiable.length) {
   say(`        e.g. ${optUnverifiable.slice(0, 2).map(o => `${o.sym} stored ${o.storedPnl} vs fields ${o.fromFields}`).join(" · ")}`);
@@ -111,10 +124,27 @@ say(`\n2. IMPOSSIBLE VALUES`);
 for (const [k, v] of Object.entries(imposs)) say(`   ${v ? "FAIL" : "OK  "} ${k.padEnd(42)} ${v}`);
 if (maeNeg) say(`   note ${"MAE < 0 (never traded against entry)".padEnd(42)} ${maeNeg}  — legitimate, not corruption (D9)`);
 
+/**
+ * ── 2b. ROWS VS TICKETS ──────────────────────────────────────────────────────
+ * Reported, never counted as an impossibility (2026-10-16). "duplicate id+closedAt" above catches a row
+ * written twice unchanged. It cannot catch the case that mattered: one ticket id with two rows at
+ * DIFFERENT closedAt — a close that was voided for evidence and a later real close of the same ticket.
+ * Those rows belong in the file. The defect was that every reader summing rows counted the ticket twice,
+ * which is a CORRUPTION-class defect by this audit's own taxonomy: it inflates a recorded total and so
+ * can manufacture an edge. Fixed at the readers (lib/ticket-rows.js under lib/reconcile.js); the count
+ * stands here so the condition is visible for as long as it exists.
+ */
+say(`\n2b. ROWS VS TICKETS  (a ticket closed twice under one id is one ticket)`);
+say(`   ${rows.length} rows · ${collapseLine(collapse)}`);
+for (const d of collapse.duplicates.slice(0, 10)) say(`      ${String(d.id).padEnd(28)} ${d.rows} rows · counted close ${d.keptClosedAt} · superseded ${d.droppedClosedAt.join(", ")}`);
+if (collapse.duplicates.length) say(`   CLASS: CORRUPTION-shaped if read per row (it inflates a total). Counted once per ticket id by every reader on lib/reconcile.js.`);
+if (collapse.ambiguous.length) say(`   INVESTIGATE: ${collapse.ambiguous.length} duplicate ticket id(s) the supersede rule cannot explain — ${collapse.ambiguous.slice(0, 6).join(", ")}`);
+
 // ── 3. THE "TOO GOOD" TRIPWIRE ────────────────────────────────────────────────
 // Every flattering number this project has produced turned out to be a bug (15/15 greens,
 // ARB +2389R, 74% win rate). So a suspiciously good result is treated as a defect signal.
-const clean = rows.filter(r => r.openedAt >= CLEAN && Number.isFinite(r.rMult) && !r.ctrl && !r.ctrlRand && !r.vetoShadow);
+// per TICKET (2026-10-16): a ticket counted twice moved n, the win rate and the mean of this tripwire
+const clean = tickets.filter(r => r.openedAt >= CLEAN && Number.isFinite(r.rMult) && !r.ctrl && !r.ctrlRand && !r.vetoShadow);
 const mean = clean.reduce((s, r) => s + r.rMult, 0) / (clean.length || 1);
 const wins = clean.filter(r => r.rMult > 0).length;
 const winRate = wins / (clean.length || 1);
@@ -156,6 +186,10 @@ fs.writeFileSync(D("integrity-audit.json"), JSON.stringify({
   // rows already adjudicated bad-with-cause under the reconcile retire convention — visible, never summed as failures
   impossibleButRetired: rows.filter(r => ((Number.isFinite(r.mae) && Math.abs(r.mae) > 10) || (Number.isFinite(r.mfe) && Math.abs(r.mfe) > 10)) && r.retired && r.retireNote).length,
   cleanN: clean.length, winRate: +winRate.toFixed(4), meanR: +mean.toFixed(4),
+  // rows vs tickets (2026-10-16): section 3 onward counts tickets; sections 1-2 still re-derive every row
+  rowsInFile: rows.length, tickets: collapse.tickets, duplicateTicketIds: collapse.duplicates.length,
+  supersededRowsNotCounted: collapse.dropped.length, unexplainedDuplicateTicketIds: collapse.ambiguous,
+  duplicateTickets: collapse.duplicates.slice(0, 50),
   tooGoodFlags: flags, defectClasses: defects2026_08_03.map(([w, c]) => ({ what: w, cls: c })), report: L,
 }, null, 1));
 console.log(`\nwritten: integrity-audit.json`);

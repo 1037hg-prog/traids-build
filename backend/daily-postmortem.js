@@ -31,9 +31,17 @@
  *      the trades they touched went on to do. A gate that blocks winners must be visible.
  *   5. TREND — the equity curve and whether today is inside its own noise band.
  *
+ * ONE ROW PER TICKET (2026-10-16). This report reads data/trade_log.json directly — deliberately, it is
+ * the day's realized cash and it must see rows the clean-era filters drop. Direct is not the same as
+ * per-row: six R21 wings whose loss-cap close was voided and whose expiry settled under the SAME ticket id
+ * have two rows each, so this report counted each wing twice — in the epoch cohort scan, in the equity
+ * curve and in the sd that decides whether today is unusual. It now collapses to one row per ticket first
+ * (lib/ticket-rows.js) and says on its own first line what that collapsed. No-op on a clean ledger.
+ *
  * Usage:  node backend/daily-postmortem.js [YYYY-MM-DD]
  */
 const fs = require("fs"), path = require("path");
+const { collapseByTicket, collapseLine } = require("./lib/ticket-rows.js");
 const D = (f) => path.join(__dirname, "data", f);
 const CLEAN = new Date("2026-07-20T00:00:00-06:00").getTime();
 const T_BAR = 2.5, MIN_SESSIONS = 4;
@@ -54,7 +62,9 @@ function clusteredT(rows) {
 }
 
 (async () => {
-  const log = (() => { try { return JSON.parse(fs.readFileSync(D("trade_log.json"), "utf8")); } catch { return []; } })();
+  const rowsInFile = (() => { try { return JSON.parse(fs.readFileSync(D("trade_log.json"), "utf8")); } catch { return []; } })();
+  const collapse = collapseByTicket(rowsInFile);   // one row per ticket id — a wing closed twice is one wing
+  const log = collapse.rows;
   const clean = log.filter(t => t && t.closedAt >= CLEAN && Number.isFinite(t.rMult) && Math.abs(t.rMult) < 10);
   const sig = clean.filter(t => !t.ctrl);
   const sessions = [...new Set(sig.map(t => day(t.closedAt)))].sort();
@@ -63,6 +73,7 @@ function clusteredT(rows) {
   const ctrlTd = clean.filter(t => t.ctrl && day(t.closedAt) === target);
 
   console.log(`\n  TRAIDS — DAILY POST-MORTEM · ${target}`);
+  console.log(`  ledger: ${rowsInFile.length} rows · ${collapseLine(collapse)}`);
   if (!td.length) { console.log(`  no settles recorded for ${target}.\n`); return; }
   const pnl = td.reduce((s, t) => s + (t.pnl || 0), 0);
   console.log(`  ${td.length} settles · win ${(100 * td.filter(t => t.rMult > 0).length / td.length).toFixed(0)}% · avgR ${R(mean(td.map(t => t.rMult)))} · ${usd(pnl)}\n`);

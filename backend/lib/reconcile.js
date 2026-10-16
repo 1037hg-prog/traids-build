@@ -30,8 +30,23 @@
  *
  * data/trade_log.jsonl is NOT a substitute. It is the immutable journal; it lags by design, and its
  * lag is reported here rather than silently absorbed.
+ *
+ * ONE ROW PER TICKET — added 2026-10-16, the wings double count.
+ *   The contract above says "source data/trade_log.json" and every line of it has always meant ROWS.
+ *   Six R21 weekly wings broke that: closed by the loss cap on 2026-09-14, VOIDED, restored to the
+ *   board under the SAME id, then settled at expiry by a PREPEND that left the voided close in place
+ *   (backend/options-settle.js). Two rows, one ticket id, two different pnl — so every report reading
+ *   from here counted each of those wings twice. The append-only journal did not: it is keyed on the
+ *   ticket id, which is why the ledger and the journal key disagreed by exactly the revoided wings.
+ *   cleanEraLedger() now reads ONE ROW PER TICKET (lib/ticket-rows.js collapseByTicket) before any
+ *   filter runs, and reports what that collapsed in `tickets`, `duplicateTicketIds`,
+ *   `supersededRowsDropped` and `unexplainedDuplicateTicketIds`. On a ledger where no ticket id
+ *   appears twice the collapse is an exact no-op and every number here is the number it always was.
+ *   BREAKS COMPARABILITY where a duplicate existed: a statistic computed on this population before
+ *   2026-10-16 counted those tickets twice. See docs/wings-double-count/2026-10-16/NOTES.md.
  */
 const fs = require("fs"), path = require("path");
+const { collapseByTicket, collapseLine } = require("./ticket-rows.js");
 const D = (f) => path.join(__dirname, "..", "data", f);
 const CANON = D("trade_log.json");
 const JOURNAL = D("trade_log.jsonl");
@@ -43,7 +58,12 @@ const mean = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
 
 /** THE canonical read. Every analysis that touches settled outcomes must start here. */
 function cleanEraLedger() {
-  const log = JSON.parse(fs.readFileSync(CANON, "utf8"));
+  const rowsInFile = JSON.parse(fs.readFileSync(CANON, "utf8"));
+  // ONE ROW PER TICKET, before any filter (2026-10-16, the wings double count). A ticket whose close was
+  // voided and re-closed under the same id has two rows here; it is one ticket and counts once. What this
+  // dropped is returned below, never absorbed. No-op when no ticket id appears twice.
+  const collapse = collapseByTicket(rowsInFile);
+  const log = collapse.rows;
   // A settled row must carry a finite pnl — resolved 2026-08-25, see knownAmbiguities() below and the
   // matching filter in src/App.jsx. Experiment sleeves that record an rMult but move no money keep
   // their own books; they do not settle into the board's P&L ledger.
@@ -74,7 +94,10 @@ function cleanEraLedger() {
   const sm = mean(signals.map((t) => t.rMult)), cm = mean(controls.map((t) => t.rMult));
   return {
     source: "data/trade_log.json", epoch: "2026-07-20T00:00:00 local (registered)",
-    rowsInFile: log.length, settled: settled.length,
+    rowsInFile: rowsInFile.length, settled: settled.length,
+    // the collapse, stated so no reader has to assume it (2026-10-16)
+    tickets: collapse.tickets, duplicateTicketIds: collapse.duplicates.length, supersededRowsDropped: collapse.dropped.length,
+    unexplainedDuplicateTicketIds: collapse.ambiguous, duplicateTickets: collapse.duplicates, ticketsLine: collapseLine(collapse),
     retiredExcluded: settledAll.length - settled.length, retireTagsHonoured: [...validRetireTags], retireTagsIGNORED: ignoredTags,
     signals, controls,
     n: signals.length, controlN: controls.length,
@@ -167,15 +190,29 @@ function deClusteredEdge() {
  * the journal wrong — it makes it INCOMPLETE, which is worse for analysis because the missing rows
  * are the most recent ones and are not missing at random.
  */
+/**
+ * TICKETS ON BOTH SIDES (2026-10-16). The journal is keyed on the ticket id — one entry per ticket, by
+ * construction. The canonical side is counted the same way here, or the two can never agree: before this,
+ * `settledInCanon` counted ROWS, so each revoided-and-re-settled wing made the journal look one entry
+ * behind for ever, and `journalRows` vs `settledInCanon` was off by exactly the number of such wings.
+ * Duplicate ticket ids in the canon are reported rather than absorbed into an apparent lag.
+ */
 function journalLag() {
   if (!fs.existsSync(JOURNAL)) return { exists: false };
-  const log = JSON.parse(fs.readFileSync(CANON, "utf8"));
-  const have = new Set();
-  for (const line of fs.readFileSync(JOURNAL, "utf8").split("\n")) { if (!line.trim()) continue; try { have.add(JSON.parse(line).id); } catch {} }
-  const settled = log.filter((t) => t && t.id && t.closedAt && Number.isFinite(t.pnl));
+  const file = JSON.parse(fs.readFileSync(CANON, "utf8"));
+  const collapse = collapseByTicket(file);
+  const have = new Map();   // ticket id -> the closedAt the journal sealed for it (the FIRST it saw; a sealed row never moves)
+  for (const line of fs.readFileSync(JOURNAL, "utf8").split("\n")) { if (!line.trim()) continue; try { const r = JSON.parse(line); if (r && r.id && !have.has(r.id)) have.set(r.id, r.closedAt ?? null); } catch {} }
+  const settled = collapse.rows.filter((t) => t && t.id && t.closedAt && Number.isFinite(t.pnl));
   const missing = settled.filter((t) => !have.has(t.id));
   const missingR = missing.filter((t) => Number.isFinite(t.rMult)).map((t) => t.rMult);
-  return { exists: true, journalRows: have.size, settledInCanon: settled.length, missing: missing.length,
+  // the journal seals the row it saw FIRST and never moves it, so a ticket whose close was voided AFTER it was
+  // journaled sits in the journal under the superseded close. Said here; repairing the journal is not a reader's
+  // to do (ledger-journal.js is append-only by design — NOTES.md, "What this package does not touch").
+  const journaledUnderSuperseded = settled.filter((t) => have.has(t.id) && have.get(t.id) !== (t.closedAt ?? null)).map((t) => t.id);
+  return { exists: true, journalRows: have.size, settledInCanon: settled.length, settledRowsInCanon: file.filter((t) => t && t.id && t.closedAt && Number.isFinite(t.pnl)).length,
+    duplicateTicketIds: collapse.duplicates.length, journaledUnderSupersededClose: journaledUnderSuperseded.slice(0, 10), journaledUnderSupersededCount: journaledUnderSuperseded.length,
+    missing: missing.length,
     missingIds: missing.slice(0, 10).map((t) => t.id),
     missingMeanR: missingR.length ? +mean(missingR).toFixed(4) : null,
     note: missing.length ? "Journal is behind. Run backend/ledger-journal.js. Do NOT analyse from the journal while it lags — the absent rows are the newest, not a random sample." : "journal current" };
@@ -225,7 +262,9 @@ function assertReconciled(quantity, computed, expected, opts = {}) {
  * figures are reported and neither is presented as the answer.
  */
 function knownAmbiguities() {
-  const log = JSON.parse(fs.readFileSync(CANON, "utf8"));
+  const file = JSON.parse(fs.readFileSync(CANON, "utf8"));
+  const collapse = collapseByTicket(file);   // one row per ticket, as cleanEraLedger() reads it (2026-10-16)
+  const log = collapse.rows;
   const clean = log.filter((t) => t && Number.isFinite(t.rMult) && t.closedAt >= CLEAN_EPOCH && !t.ctrl);
   const noPnl = clean.filter((t) => !Number.isFinite(t.pnl));
   const withPnl = clean.filter((t) => Number.isFinite(t.pnl));
@@ -275,6 +314,39 @@ function knownAmbiguities() {
       canonicalChoice: "RESOLVED 2026-08-26 by the operator: EXCLUDED. cleanEraLedger() now drops validly-retired rows, and src/App.jsx matches. A tag counts ONLY if the row carries a retireNote naming a root cause AND the tag id appears in the append-only change-registry — a bare flag excludes nothing and is reported under retireTagsIGNORED. That guard is the point: excluding retired rows moves the book in the FLATTERING direction, so dropping a bad day must leave a permanent dated public record of having done it.",
       forOperator: "Decide once, record it in the change registry, and make every reader obey it. If the answer is EXCLUDE, the tag must require a named root cause and a change-registry entry before it counts — otherwise `retired` becomes a way to delete inconvenient losses.",
     };
+  })(), (() => {
+    /**
+     * A VOID TAG CARRIED ONTO THE SURVIVING ROW — raised 2026-10-16 by the wings double-count fix, and
+     * deliberately NOT resolved here.
+     *
+     * The collapse above makes a revoided-and-re-settled ticket count ONCE instead of twice. It cannot
+     * decide whether that one row counts at all. backend/options-settle.js copies `retired`, `retireNote`
+     * and `voidForEvidence` from the OPEN board position onto the settle row it writes. If the board row
+     * of a voided-and-restored wing still carried the void tag, the EXPIRY settle — the real close, the
+     * one that moved money — inherited it, and the retired-row rule above then excludes it. The ticket
+     * would go from counting twice to counting ZERO times, and both are wrong.
+     *
+     * Which it is depends on bytes in data/, not on code: it is the rows listed here, or none. This is
+     * reported, never guessed at. The repair, if the list is non-empty, is a data repair with the
+     * operator's word on it — a settle row that is the surviving close of a restored ticket should not
+     * carry the predecessor's void tag — and it is not a reader's to make.
+     */
+    const settled = log.filter((t) => t && Number.isFinite(t.rMult) && Number.isFinite(t.pnl) && t.closedAt >= CLEAN_EPOCH);
+    const droppedById = new Map(); for (const r of collapse.dropped) if (r && r.id) droppedById.set(r.id, r);
+    const affected = settled.filter((t) => t.retired && t.voidForEvidence === true && droppedById.has(t.id) && droppedById.get(t.id).retired === t.retired);
+    const byStrategy = {}; for (const t of affected) byStrategy[t.strategy || "(none)"] = (byStrategy[t.strategy || "(none)"] || 0) + 1;
+    return {
+      id: "void-tag-on-surviving-close", strategies: byStrategy,
+      question: "A ticket whose voided close was superseded: does its surviving settle row carry the predecessor's void tag, and so count zero times?",
+      affects: affected.length, ids: affected.slice(0, 20).map((t) => t.id),
+      meanRofAffected: affected.length ? +mean(affected.map((t) => t.rMult)).toFixed(4) : null,
+      pnlOfAffected: affected.length ? Math.round(affected.reduce((s, t) => s + t.pnl, 0)) : 0,
+      ledgerMeanIncluding: settled.length ? +mean(settled.map((t) => t.rMult)).toFixed(4) : null,
+      ledgerMeanExcluding: null,
+      directionOfExclusion: "UNKNOWN until the list is read — it is whatever those tickets did",
+      canonicalChoice: "OPEN. The collapse makes such a ticket count at most once; whether it counts at all is the retired-row rule's answer, and that rule is the operator's. Nothing here edits a row.",
+      forOperator: "If this list is non-empty, those settle rows inherited a void tag from the board row of a restored wing and are being excluded as retired. Clear the tag on the SURVIVING close only, with a change-registry entry naming this defect, or state that they stay excluded. Do not relax the retired-row rule to reach them.",
+    };
   })()];
 }
 
@@ -284,15 +356,17 @@ module.exports = { recomputeEdge, hasRealStop, CLEAN_EPOCH, cleanEraLedger, epis
 if (require.main === module) {
   const L = cleanEraLedger(), J = journalLag();
   console.log(`CANONICAL CLEAN-ERA LEDGER  (${L.source}, epoch ${L.epoch})`);
-  console.log(`  rows in file ${L.rowsInFile} · settled since epoch ${L.settled}`);
+  console.log(`  rows in file ${L.rowsInFile} · ${L.ticketsLine}`);
+  console.log(`  settled since epoch ${L.settled}`);
   console.log(`  signals n=${L.n}  meanR ${L.meanR}  win ${L.winRatePct}%`);
   console.log(`  controls n=${L.controlN}  meanR ${L.controlMeanR}`);
   console.log(`  POOLED EDGE  ${L.pooledEdgeR >= 0 ? "+" : ""}${L.pooledEdgeR}R`);
   console.log(`\nJOURNAL (data/trade_log.jsonl, append-only shadow)`);
   if (!J.exists) console.log(`  not present`);
   else {
-    console.log(`  journal rows ${J.journalRows} · settled in canon ${J.settledInCanon} · MISSING ${J.missing}`);
+    console.log(`  journal entries ${J.journalRows} · settled TICKETS in canon ${J.settledInCanon} (rows ${J.settledRowsInCanon}; ${J.duplicateTicketIds} ticket id(s) hold more than one row) · MISSING ${J.missing}`);
     if (J.missing) console.log(`  missing rows mean ${J.missingMeanR}R — ${J.missingIds.slice(0, 6).join(", ")}`);
+    if (J.journaledUnderSupersededCount) console.log(`  ${J.journaledUnderSupersededCount} ticket(s) sealed in the journal under a SUPERSEDED close — the journal cannot be rewritten; read those tickets from the JSON: ${J.journaledUnderSupersededClose.join(", ")}`);
     console.log(`  ${J.note}`);
   }
   console.log(`
