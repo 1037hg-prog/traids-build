@@ -14,10 +14,12 @@
  *   WRITES      POST /v2/orders: a single-leg option (OCC symbol, no legs) or an mleg order whose every leg is an OCC symbol; whole
  *               contracts; no notional; no bracket / oco / oto. Anything else, a stock or ETF order included, refuses.
  *               DELETE / PATCH /v2/orders/{id}: only after GET /v2/orders/{id} shows an option order (the BOOK account also holds
- *               Plan E's ETF orders; the mirror may never cancel or replace them). A PATCH may not carry symbol, side, legs or notional.
+ *               Plan E's ETF orders; the mirror may never cancel or replace them). A PATCH may not carry symbol, side, legs, notional
+ *               or order_class. Paths are canonical only and every write goes to a path rebuilt from validated parts; a body is
+ *               serialized once and the checked text is the text sent.
  *               DELETE /v2/positions/{OCC}, POST /v2/positions/{OCC}/exercise and /do-not-exercise: option symbols only.
  *               Every other write refuses, DELETE /v2/orders (cancel all) and DELETE /v2/positions (close all) among them.
- *   READS       GET on /v2/... passes (the mirror reads its orders, positions and the calendar). Reads never change anything.
+ *   READS       GET on a canonical /v2/... path passes (the mirror reads its orders, positions and the calendar). Reads never change anything.
  *
  * Key VALUES are never printed, logged or put in an error. The guard sends nothing itself until request() is called; fetchImpl is
  * injected so the selftest runs on a fake broker with no network.
@@ -78,9 +80,10 @@ function makeBookOptionsGuard({ env = process.env, fetchImpl = globalThis.fetch,
   if (typeof fetchImpl !== "function") refuse("NO_FETCH", "no fetch implementation");
   const headers = { "APCA-API-KEY-ID": keyId, "APCA-API-SECRET-KEY": secret, "content-type": "application/json" };
 
-  const raw = async (method, p, body) => {
+  // `wire` is the exact text sent: the body is serialized ONCE, checked from that text, and that text is what goes out
+  const raw = async (method, p, wire) => {
     const init = { method, headers };
-    if (body !== undefined) init.body = JSON.stringify(body);
+    if (wire !== undefined) init.body = wire;
     if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) init.signal = AbortSignal.timeout(timeoutMs);
     const r = await fetchImpl(base + p, init);
     const t = await r.text();
@@ -98,45 +101,61 @@ function makeBookOptionsGuard({ env = process.env, fetchImpl = globalThis.fetch,
     return { accountNumberTail: got.slice(-4) };
   }
 
-  const seg = (p) => p.split("?")[0].split("/").filter(Boolean);           // "/v2/orders/abc" -> ["v2","orders","abc"]
+  const ORDER_ID = /^[A-Za-z0-9-]{1,64}$/;
   const optionOrderById = async (id) => {
-    let o; try { o = await raw("GET", `/v2/orders/${encodeURIComponent(id)}`); } catch (e) { refuse("ORDER_UNREAD", `GET /v2/orders/${id} failed (${String(e.message).slice(0, 120)})`); }
+    let o; try { o = await raw("GET", `/v2/orders/${id}`); } catch (e) { refuse("ORDER_UNREAD", `GET /v2/orders/${id} failed (${String(e.message).slice(0, 120)})`); }
     if (!isOptionOrderRecord(o)) refuse("NOT_OPTION", `order ${id} is not an option order (${(o && (o.symbol || o.order_class)) || "?"}) — the mirror never touches it`);
     return o;
   };
 
-  /** request(method, path, body) — the mirror's single door to the broker. */
+  /**
+   * request(method, path, body) — the mirror's single door to the broker. The path must be canonical (/v2/ then plain segments of
+   * letters, digits, '.', '_' or '-'; no '%', '\\', '.' or '..' segment). Every write is sent to a path REBUILT from the validated
+   * parts, never to the caller's string, and its body is serialized once: the checked text is the sent text.
+   */
   async function request(method, p, body) {
     const M = String(method || "").toUpperCase();
-    if (typeof p !== "string" || !p.startsWith("/v2/") || /\.\.|\/\//.test(p) || /[\s#]/.test(p)) refuse("PATH", `path ${JSON.stringify(p)} is not allowed`);
-    const s = seg(p);
-    if (M === "GET") { if (body !== undefined) refuse("PATH", "a GET carries no body"); return raw("GET", p); }
+    if (typeof p !== "string") refuse("PATH", "the path is not a string");
+    const qi = p.indexOf("?"), pathPart = qi < 0 ? p : p.slice(0, qi), query = qi < 0 ? "" : p.slice(qi + 1);
+    if (!/^\/v2(\/[A-Za-z0-9._-]+)+$/.test(pathPart)) refuse("PATH", `path ${JSON.stringify(pathPart)} is not a canonical /v2/ path`);
+    const s = pathPart.split("/").filter(Boolean);
+    if (s.some((x) => x === "." || x === "..")) refuse("PATH", "a '.' or '..' segment is not allowed");
+    if (query && !/^[A-Za-z0-9_.,:=&-]*$/.test(query)) refuse("PATH", "the query holds characters that are not allowed");
+    let wire, snap;
+    if (body !== undefined) {
+      try { wire = JSON.stringify(body); snap = wire === undefined ? undefined : JSON.parse(wire); } catch (e) { refuse("BODY", `the body does not serialize (${String(e.message).slice(0, 60)})`); }
+    }
+    if (M === "GET") { if (body !== undefined) refuse("PATH", "a GET carries no body"); return raw("GET", pathPart + (query ? "?" + query : "")); }
+    if (query && !(M === "DELETE" && s[1] === "positions")) refuse("PATH", `a ${M} carries no query`);
     await verifyAccount();
-    const sym = s[2] !== undefined ? decodeURIComponent(s[2]) : undefined;
     if (M === "POST" && s.length === 2 && s[1] === "orders") {
-      const why = checkOptionOrder(body); if (why) refuse("NOT_OPTION", why);
-      return raw("POST", p.split("?")[0], body);
+      const why = checkOptionOrder(snap); if (why) refuse("NOT_OPTION", why);
+      return raw("POST", "/v2/orders", wire);
     }
     if ((M === "DELETE" || M === "PATCH") && s.length === 3 && s[1] === "orders") {
+      const id = s[2]; if (!ORDER_ID.test(id)) refuse("PATH", `order id ${JSON.stringify(id)} is not an order id`);
       if (M === "DELETE" && body !== undefined) refuse("PATH", "a cancel carries no body");
       if (M === "PATCH") {
-        if (!isPlainObject(body)) refuse("PATH", "a replace needs a body");
-        const bad = ["symbol", "side", "legs", "notional", "order_class"].filter((k) => k in body); if (bad.length) refuse("NOT_OPTION", `a replace may not change ${bad.join(", ")}`);
-        if (body.qty !== undefined && !isWholeQty(body.qty)) refuse("NOT_OPTION", "a replace qty must be whole contracts");
+        if (!isPlainObject(snap)) refuse("PATH", "a replace needs a body");
+        const bad = ["symbol", "side", "legs", "notional", "order_class"].filter((k) => k in snap); if (bad.length) refuse("NOT_OPTION", `a replace may not change ${bad.join(", ")}`);
+        if (snap.qty !== undefined && !isWholeQty(snap.qty)) refuse("NOT_OPTION", "a replace qty must be whole contracts");
       }
-      await optionOrderById(sym);
-      return raw(M, p.split("?")[0], body);
+      await optionOrderById(id);
+      return raw(M, `/v2/orders/${id}`, M === "PATCH" ? wire : undefined);
     }
     if (M === "DELETE" && s.length === 3 && s[1] === "positions") {
-      if (!isOccSymbol(sym)) refuse("NOT_OPTION", `position ${JSON.stringify(sym)} is not an option`);
-      if (/[?&](percentage)=/.test(p)) refuse("PATH", "a partial close by percentage is not allowed");
-      return raw("DELETE", p, undefined);
+      if (body !== undefined) refuse("PATH", "a close carries no body");
+      if (!isOccSymbol(s[2])) refuse("NOT_OPTION", `position ${JSON.stringify(s[2])} is not an option`);
+      if (query && !/^qty=\d+$/.test(query)) refuse("PATH", "a close takes only qty=<whole contracts> (no percentage)");
+      if (query && !isWholeQty(query.slice(4))) refuse("PATH", "a close qty must be whole contracts");
+      return raw("DELETE", `/v2/positions/${s[2]}` + (query ? "?" + query : ""), undefined);
     }
     if (M === "POST" && s.length === 4 && s[1] === "positions" && (s[3] === "exercise" || s[3] === "do-not-exercise")) {
-      if (!isOccSymbol(sym)) refuse("NOT_OPTION", `position ${JSON.stringify(sym)} is not an option`);
-      return raw("POST", p.split("?")[0], undefined);
+      if (body !== undefined) refuse("PATH", "an exercise carries no body");
+      if (!isOccSymbol(s[2])) refuse("NOT_OPTION", `position ${JSON.stringify(s[2])} is not an option`);
+      return raw("POST", `/v2/positions/${s[2]}/${s[3]}`, undefined);
     }
-    refuse("PATH", `${M} ${p.split("?")[0]} is not an options-mirror call`);
+    refuse("PATH", `${M} ${pathPart} is not an options-mirror call`);
   }
 
   return { request, verifyAccount, describe: () => ({ account: "BOOK (paper)", envNames: { ...ENV }, base }) };

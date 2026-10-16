@@ -81,4 +81,4 @@ function run({ mode, root = REPO, nowMs = Date.now(), log = console.log, checkIm
   return 0;
 }
 
-module.exports = { PKG, REPO, FILES, sha, stateOf, fence, run };
+module.exports = { PKG, REPO, FILES, sha, stateOf, fence, run, nodeCheck };

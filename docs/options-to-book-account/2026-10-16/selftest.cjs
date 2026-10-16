@@ -9,7 +9,7 @@ const fs = require("fs"), path = require("path"), os = require("os");
 const PKG = __dirname, REPO = path.resolve(PKG, "..", "..", "..");
 const { loadCjs } = require("./loadcjs.cjs");
 const G = loadCjs(path.join(PKG, "staged", "backend", "lib", "book-options-guard.js"));
-const P = require("./pkg.cjs");
+const P = require("./pkg.cjs"), R = require("./record.cjs");
 
 let n = 0; const fails = [];
 const ok = (name, cond, detail) => { n++; if (!cond) fails.push(name + (detail ? ` — ${detail}` : "")); console.log(`${cond ? "PASS" : "FAIL"}  ${name}`); };
@@ -52,7 +52,7 @@ const mleg = (o = {}) => ({ order_class: "mleg", qty: "1", type: "limit", limit_
   ok("an mleg with a top-level symbol is refused", G.checkOptionOrder(mleg({ symbol: "XYZ" })) !== null);
   ok("an mleg with 0 or 5 legs is refused", G.checkOptionOrder(mleg({ legs: [] })) !== null && G.checkOptionOrder(mleg({ legs: Array(5).fill({ symbol: OCC, ratio_qty: "1", side: "buy" }) })) !== null);
   ok("notional is refused", G.checkOptionOrder(single({ notional: "100" })) !== null);
-  ok("fractional / zero / missing qty is refused", G.checkOptionOrder(single({ qty: "0.5" })) !== null && G.checkOptionOrder(single({ qty: 0 })) !== null && G.checkOptionOrder(single({ qty: undefined })) !== null);
+  ok("fractional / zero / missing qty is refused", G.checkOptionOrder(single({ qty: 0.5 })) !== null && G.checkOptionOrder(single({ qty: "0.5" })) !== null && G.checkOptionOrder(single({ qty: 0 })) !== null && G.checkOptionOrder(single({ qty: undefined })) !== null);
   ok("bracket / oco / oto are refused", ["bracket", "oco", "oto"].every((c) => G.checkOptionOrder(single({ order_class: c })) !== null));
   ok("a single-leg body with legs is refused", G.checkOptionOrder(single({ legs: [] })) !== null);
   ok("a non-object body is refused", G.checkOptionOrder(null) !== null && G.checkOptionOrder([single()]) !== null && G.checkOptionOrder("x") !== null);
@@ -117,6 +117,37 @@ const mleg = (o = {}) => ({ order_class: "mleg", qty: "1", type: "limit", limit_
     ok("every write was preceded by an account read", b.calls.every((c, i) => c.method === "GET" || b.calls.slice(0, i).some((x) => x.path === "/v2/account")));
   }
 
+  // ---- 5b. what is checked is what is sent; paths are canonical and writes go to rebuilt paths --------------------------------
+  {
+    const orders = { "opt-1": { id: "opt-1", symbol: OCC, asset_class: "us_option" }, "etf-1": { id: "etf-1", symbol: "SPY", asset_class: "us_equity" } };
+    const { b, g } = guardWith({ orders });
+    const sneaky = { ...single(), toJSON: () => ({ symbol: "SPY", qty: "100", side: "buy", type: "market", time_in_force: "day" }) };
+    ok("a body whose toJSON turns it into a stock order: refused, nothing sent", (await refusedWith(() => g.request("POST", "/v2/orders", sneaky), "NOT_OPTION")) === true && b.writes().length === 0);
+    let flip = 0; const getter = { qty: "1", side: "buy", type: "market", time_in_force: "day" }; Object.defineProperty(getter, "symbol", { enumerable: true, get: () => (flip++ === 0 ? OCC : "SPY") });
+    const gr = await refusedWith(() => g.request("POST", "/v2/orders", getter));
+    ok("a getter symbol is read once: the text sent is the text checked", gr === true ? b.writes().length === 0 : (b.writes().length === 1 && b.writes()[0].body.symbol === OCC), String(gr) + JSON.stringify(b.writes()));
+    const inh = Object.create({ symbol: OCC }); Object.assign(inh, { qty: "1", side: "buy", type: "market", time_in_force: "day" });
+    const nw = b.writes().length;
+    ok("an inherited symbol is not trusted (it is not in the sent text)", (await refusedWith(() => g.request("POST", "/v2/orders", inh), "NOT_OPTION")) === true && b.writes().length === nw);
+    const pt = { limit_price: "1.05", toJSON: () => ({ symbol: "SPY", qty: "100" }) };
+    ok("a PATCH body whose toJSON changes the symbol: refused", (await refusedWith(() => g.request("PATCH", "/v2/orders/opt-1", pt), "NOT_OPTION")) === true && b.writes().length === nw);
+    for (const bad of ["/v2/orders/opt-1\\%2E%2E", "/v2/orders/opt-1%2F..", "/v2/orders/%2E", "/v2/orders/opt-1;x", "/v2/orders/opt-1/../../orders", "/v2/orders/..", "/v2/orders/.", "/v2/orders/%E0"]) {
+      ok(`a non-canonical write path is a refusal: ${bad}`, (await refusedWith(() => g.request("DELETE", bad), "PATH")) === true && b.writes().length === nw);
+    }
+    ok("GET on a non-canonical path is refused too", (await refusedWith(() => g.request("GET", "/v2/%2E%2E/v1/orders"), "PATH")) === true && (await refusedWith(() => g.request("GET", "/v2/orders?x=%2F"), "PATH")) === true);
+    ok("a stock symbol percent-encoded in a position close: refused", (await refusedWith(() => g.request("DELETE", "/v2/positions/%53%50%59"), "PATH")) === true && b.writes().length === nw);
+    const c0 = b.calls.length; await g.request("DELETE", "/v2/orders/opt-1");
+    const sent = b.calls.slice(c0).filter((c) => c.method === "DELETE");
+    ok("a cancel goes to the rebuilt path of the order it looked up", sent.length === 1 && sent[0].path === "/v2/orders/opt-1");
+    ok("a cancel with a body: refused", (await refusedWith(() => g.request("DELETE", "/v2/orders/opt-1", {}), "PATH")) === true);
+    ok("a replace with a fractional qty: refused", (await refusedWith(() => g.request("PATCH", "/v2/orders/opt-1", { qty: "1.5" }), "NOT_OPTION")) === true && (await refusedWith(() => g.request("PATCH", "/v2/orders/opt-1", { qty: 0.5 }), "NOT_OPTION")) === true);
+    ok("a POST /v2/orders with a query: refused", (await refusedWith(() => g.request("POST", "/v2/orders?symbol=SPY", single()), "PATH")) === true);
+    const c1 = b.calls.length; await g.request("DELETE", `/v2/positions/${OCC}?qty=2`);
+    ok("an option close by whole qty goes to the rebuilt path with its qty", b.calls.slice(c1).some((c) => c.method === "DELETE" && c.path === `/v2/positions/${OCC}?qty=2`));
+    ok("a close by fractional qty: refused", (await refusedWith(() => g.request("DELETE", `/v2/positions/${OCC}?qty=1.5`), "PATH")) === true);
+    ok("a body that does not serialize: refused as a guard refusal", (await refusedWith(() => { const c = {}; c.c = c; return g.request("POST", "/v2/orders", c); }, "BODY")) === true);
+  }
+
   // ---- 6. no key value ever leaves in an error ----------------------------------------------------------------------------
   {
     const msgs = [];
@@ -134,11 +165,28 @@ const mleg = (o = {}) => ({ order_class: "mleg", qty: "1", type: "limit", limit_
     ok("plan reads base (absent)", P.run({ mode: "plan", root, nowMs: SAT, log: quiet }) === 0 && P.stateOf(rel, root).state === "base");
     ok("apply inside the fence is refused", P.run({ mode: "apply", root, nowMs: WED10, log: quiet }) === 2 && !fs.existsSync(live));
     ok("apply writes staged byte for byte", P.run({ mode: "apply", root, nowMs: SAT, log: quiet }) === 0 && fs.readFileSync(live).equals(fs.readFileSync(path.join(PKG, "staged", rel))));
-    fs.appendFileSync(live, "\n// drift\n"); ok("drift refuses rollback", P.run({ mode: "rollback", root, nowMs: SAT, log: quiet }) === 2 && fs.existsSync(live));
+    fs.appendFileSync(live, "\n// drift\n"); ok("drift refuses apply and rollback", P.run({ mode: "apply", root, nowMs: SAT, log: quiet }) === 2 && P.run({ mode: "rollback", root, nowMs: SAT, log: quiet }) === 2 && fs.existsSync(live));
     fs.writeFileSync(live, fs.readFileSync(path.join(PKG, "staged", rel)));
     ok("rollback removes the new file", P.run({ mode: "rollback", root, nowMs: SAT, log: quiet }) === 0 && !fs.existsSync(live));
   }
-  ok("the live repo has no guard file yet (nothing applied here)", !fs.existsSync(path.join(REPO, "backend", "lib", "book-options-guard.js")));
+  ok("the live guard file is base or applied, never drifted", ["base", "applied"].includes(P.stateOf("backend/lib/book-options-guard.js", REPO).state));
+
+  // ---- 8. record.cjs on a temp root ---------------------------------------------------------------------------------------
+  {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "book-guard-rec-")), data = path.join(root, "backend", "data"), cr = path.join(data, "change-registry.json"), out = [];
+    fs.mkdirSync(path.join(root, "backend", "lib"), { recursive: true }); fs.mkdirSync(data, { recursive: true });
+    for (const f of ["run-window.js", "atomic-write.js"]) fs.copyFileSync(path.join(REPO, "backend", "lib", f), path.join(root, "backend", "lib", f));
+    loadCjs(path.join(REPO, "backend", "lib", "atomic-write.js")).writeJsonAtomic(cr, []);
+    const said = (argv, nowMs) => { out.length = 0; const code = R.main(argv, { root, nowMs, log: (x) => out.push(String(x)), lockWaitMs: 1, lockTries: 2 }); return { code, text: out.join(" ") }; };
+    const SAT = Date.parse("2026-10-17T19:00:00Z"), WIN = Date.parse("2026-10-14T15:49:00-06:00");
+    ok("record --dry writes nothing", said(["--dry"], SAT).code === 0 && JSON.parse(fs.readFileSync(cr, "utf8")).length === 0);
+    ok("record --apply without --restarted: refused", said(["--apply"], SAT).code === 2);
+    ok("record --apply at 15:49 MT on a trading day: refused for the window", /no-registry-write window/.test(said(["--restarted", "2026-10-13", "--apply"], WIN).text));
+    ok("record --apply on Saturday appends one row", said(["--restarted", "2026-10-16", "--apply"], SAT).code === 0 && JSON.parse(fs.readFileSync(cr, "utf8")).length === 1 && JSON.parse(fs.readFileSync(cr, "utf8"))[0].id === "options-mirror-to-book-2026-10-16");
+    ok("a second --apply adds nothing", said(["--restarted", "2026-10-16", "--apply"], SAT).code === 0 && JSON.parse(fs.readFileSync(cr, "utf8")).length === 1);
+    ok("the row names env variables only, no values", !/FAKE|PA[A-Z0-9]{6,}/.test(fs.readFileSync(cr, "utf8")) && /ALPACA_BOOK_ACCOUNT_NUMBER/.test(fs.readFileSync(cr, "utf8")));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
   const src = fs.readFileSync(path.join(PKG, "staged", "backend", "lib", "book-options-guard.js"), "utf8");
   ok("the guard names no main-account key variable as a source", !/env\[\s*["']ALPACA_(KEY_ID|SECRET_KEY)["']\s*\]|process\.env\.ALPACA_(KEY_ID|SECRET_KEY)\b/.test(src));
   ok("the guard holds no live host", !/https:\/\/api\.alpaca\.markets/.test(src));
