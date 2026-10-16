@@ -269,6 +269,7 @@ const quiet = () => {};
     ok("main --dry: the run dies -> exit 4 and nothing is sent", (await A.main(["--dry"], { runImpl: boom, notify: nfDry, log: quiet, logErr: quiet })) === 4 && nfDry.sent.length === 0);
     ok("main: a bad argument -> exit 2", (await A.main(["--send"], { runImpl: boom, log: quiet, logErr: quiet })) === 2);
     let seen = null; const c5 = await A.main(["--dry", "--now", "2026-10-14T21:00:00Z"], { runImpl: async (o) => { seen = o; return { exit: 0 }; }, log: quiet, logErr: quiet });
+    ok("main: a normal run's exit 3 and 4 pass straight through", (await A.main([], { runImpl: async () => ({ exit: 4 }), log: quiet, logErr: quiet })) === 4 && (await A.main([], { runImpl: async () => ({ exit: 3 }), log: quiet, logErr: quiet })) === 3);
     ok("main: passes --dry and --now to run and returns its exit", c5 === 0 && seen.dry === true && seen.nowMs === Date.parse("2026-10-14T21:00:00Z"));
   }
 

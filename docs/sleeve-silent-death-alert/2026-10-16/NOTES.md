@@ -19,7 +19,7 @@ This script sits outside every sleeve. It:
 | `staged/backend/sleeve-silence-alert.js` | **new** script. Run it as `node backend/sleeve-silence-alert.js [--dry] [--now ISO]`. |
 | `base/backend/sleeve-silence-alert.js.absent` | marker that the file is new; rollback removes it |
 | `deploy.cjs --plan / --apply`, `rollback.cjs --plan / --rollback` | refuse on drift; refuse on trading weekdays 05:30–16:00 MT |
-| `selftest.cjs` | 81 checks: fake clock, fake state files and ledgers, fake notify. Ends `SELFTEST PASSED (81 checks)`. |
+| `selftest.cjs` | 82 checks: fake clock, fake state files and ledgers, fake notify. Ends `SELFTEST PASSED (82 checks)`. |
 
 There is no `record.cjs`. The script writes no registry row, changes no registered test and mints no test id. Its only output file is its own dedupe state, `backend/data/sleeve-silence-alert.json`, written through `lib/atomic-write.js`.
 
@@ -111,5 +111,5 @@ No test was removed. Every other change added tests, for the checker's findings:
 
 ## Checks run here
 
-- `node docs/sleeve-silent-death-alert/2026-10-16/selftest.cjs` → `SELFTEST PASSED (81 checks)`
+- `node docs/sleeve-silent-death-alert/2026-10-16/selftest.cjs` → `SELFTEST PASSED (82 checks)`
 - `node --check` on every file; `deploy.cjs --plan` reads `base` (new file)
