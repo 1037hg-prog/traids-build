@@ -21,4 +21,4 @@ At home, make-clean-copy.cjs rebuilds this tree from scratch from the home repos
 
 ## Tests
 
-Tests that need real trading data, ledgers, broker access or the full registry run at home, not here. Many selftests here will miss their data files or fixtures; that is expected and is not a reason to add data. Work done here goes to a branch named cloud/<short-name>; the operator re-checks it and applies it at home.
+Tests that need real trading data, ledgers, broker access or the full registry run at home, not here. Many selftests here will miss their data files or fixtures; that is expected and is not a reason to add data. Work done here goes to a branch named claude/<short-name>; the operator re-checks it and applies it at home.

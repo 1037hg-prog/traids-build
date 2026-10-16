@@ -5,7 +5,7 @@ This is a code-only clean copy of TRAIDS. Read README.md for what is and is not 
 ## What a session may do
 
 - Read and change code, write tests, and run tests that need no data, no network and no keys.
-- Finish by committing to a branch named `cloud/<short-name>` and pushing that branch only. Never commit to `main` and never push `main`.
+- Finish by committing to a branch named `claude/<short-name>` and pushing that branch only. Never commit to `main` and never push `main`.
 - The operator re-checks every change and applies it at home. Nothing done here deploys, restarts or schedules anything.
 
 ## Hard rules

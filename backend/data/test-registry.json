@@ -1,6 +1,6 @@
 {
  "spec": "test-registry-redacted-v1",
- "registrySha": "626f875f3521602cb46b58d34ea527480b9834bdb36bc1afa3f856c915f421a5",
+ "registrySha": "232dd553069f2c62f8e742b38b3882e0db57f7bd96daf72491f4b9cfd139f709",
  "tests": [
   {
    "id": 77,
@@ -8130,7 +8130,7 @@
    "id": "R356",
    "registered": "2026-10-15",
    "name": "Capped-call hedge chase — hold the stock only while it trades between a disclosed capped call's lower strike and its cap",
-   "status": "REGISTERED 2026-10-15 — historical, read once; builder assigned",
+   "status": "SEALED 2026-10-15 — DID NOT PASS (-0.8028%/month at t -0.7916 vs bar 1.719; the band book made 0.2698%/month against 1.0726% for simply holding the same names)",
    "script": "backend/r356-capped-call-band.js",
    "parent": "Outside-model candidate 2026-10-15, 'Capped-call hedge chase'. Untested here; not in the exclusion list the model was given.",
    "multiplicityFamily": "FORCED-HEDGE — R356 alone. The rule is taken VERBATIM from the external proposal (band = lower strike to cap, 20-day dollar volume over $20m, at most 8 names, most recent deal per issuer); no parameter was searched by us, so the bar is single-variant. Any later variant of the band or the universe owes a best-of-N bar and a new id.",
@@ -8171,7 +8171,17 @@
     "Band membership is mechanically correlated with the stock having risen since issue, so the naive version is a momentum bet; the hold comparator is what removes that, and it is the whole test.",
     "Capped-call terms are sometimes stated only in an exhibit, so a hand-checked subsample is needed to confirm the parser."
    ],
-   "readCondition": "--read once, after --selftest passes and every control has run, sealed the same day through the read-test ritual."
+   "readCondition": "--read once, after --selftest passes and every control has run, sealed the same day through the read-test ritual.",
+   "read": {
+    "date": "2026-10-15",
+    "letter": "DID NOT PASS",
+    "statistic": "monthly hold-relative difference, Newey-West lag 1",
+    "n": 127,
+    "unit": "calendar months",
+    "bar": 1.719,
+    "file": "backend/data/r356-read.json",
+    "adoption": "none"
+   }
   },
   {
    "writerExists": false,
