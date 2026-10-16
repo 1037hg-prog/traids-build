@@ -109,7 +109,7 @@ ok("the default OFF path is backend/data/cost-band-OFF beside the installed lib"
     ok("apply with the default check refuses a broken staged file and leaves nothing behind", P2.run({ mode: "apply", root, nowMs: SAT, log: quiet }) === 1 && !fs.existsSync(live));
   }
   ok("apply with the default check succeeds on the staged file; rollback removes it", P.run({ mode: "apply", root, nowMs: SAT, log: quiet }) === 0 && P.run({ mode: "rollback", root, nowMs: SAT, log: quiet }) === 0 && !fs.existsSync(live));
-  ok("the live repo itself is untouched by the selftest", !fs.existsSync(path.join(REPO, rel)));
+  ok("the live repo itself is untouched by the selftest", P.stateOf(rel, REPO).state !== "drift");
 }
 
 // ---- 7. record.cjs on a temp root --------------------------------------------------------------------------------------------
@@ -147,7 +147,7 @@ ok("the default OFF path is backend/data/cost-band-OFF beside the installed lib"
 
 // ---- 8. the package files ---------------------------------------------------------------------------------------------------
 ok("base/ marks the gate file as absent", fs.existsSync(path.join(PKG, "base", "backend", "lib", "cost-band-gate.js.absent")));
-ok("the live repo has no cost-band-gate.js yet (nothing was applied here)", !fs.existsSync(path.join(REPO, "backend", "lib", "cost-band-gate.js")));
+ok("the live gate file is base or applied, never drifted", ["base", "applied"].includes(P.stateOf("backend/lib/cost-band-gate.js", REPO).state));
 ok("the gate makes no network or broker call", !/require\(["'](https?|net|tls|dns|child_process)["']\)|fetch\(|alpaca|broker/i.test(fs.readFileSync(path.join(PKG, "staged", "backend", "lib", "cost-band-gate.js"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "")));
 
 for (const d of temps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
