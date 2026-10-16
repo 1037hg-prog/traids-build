@@ -14,7 +14,7 @@ const P = require("./pkg.cjs"), R = require("./record.cjs");
 let n = 0; const fails = [];
 const ok = (name, cond, detail) => { n++; if (!cond) fails.push(name + (detail ? ` — ${detail}` : "")); console.log(`${cond ? "PASS" : "FAIL"}  ${name}`); };
 const temps = [], tmp = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "cost-band-st-")); temps.push(d); return d; };
-const mt = (iso) => Date.parse(iso + "-06:00");   // an MT wall-clock time in October / November 2026 (MDT -6 until 11-01, then MST -7: see THANKS)
+const mt = (iso) => Date.parse(iso + "-06:00");   // an MT wall-clock time in October / November 2026 (MDT -6 until 11-01; the November checks use -07:00 explicitly)
 const ON = { exists: () => false }, OFF = { exists: () => true };
 const tk = (bps, extra = {}) => ({ id: "fx-1", cls: "Equity", sym: "FAKE", dir: 1, entry: 50, stop: 48, stopDist: 2, addedAt: 1, strategy: "Ensemble", obs: bps === undefined ? {} : { spreadBps: bps, clientStamp: "kept" }, ...extra });
 // a 13:00 MT Saturday and a 10:00 / 14:00 MT Wednesday (2026-10-17 is a Saturday; 2026-10-14 a Wednesday). MT is UTC-6 in October.
@@ -98,7 +98,9 @@ ok("the default OFF path is backend/data/cost-band-OFF beside the installed lib"
   ok("fence: a market holiday at 10:00 MT is allowed; the weekday after is not", P.fence(Date.parse("2026-11-26T10:00:00-07:00"), root) === null && P.fence(Date.parse("2026-11-27T10:00:00-07:00"), root) !== null);
   ok("fence: Saturday and Sunday allowed", P.fence(mt("2026-10-17T10:00:00"), root) === null && P.fence(mt("2026-10-18T10:00:00"), root) === null);
   ok("a failed check after the write puts the file back (exit 1, absent again)", P.run({ mode: "apply", root, nowMs: SAT, log: quiet, checkImpl: () => "fake syntax error" }) === 1 && !fs.existsSync(live) && P.stateOf(rel, root).state === "base");
-  ok("the real node --check runs on apply (a broken staged copy would fail)", P.run({ mode: "apply", root, nowMs: SAT, log: quiet }) === 0 && P.run({ mode: "rollback", root, nowMs: SAT, log: quiet }) === 0 && !fs.existsSync(live));
+  { const bad = path.join(root, "broken.js"), good = path.join(root, "good.js"); fs.writeFileSync(bad, "const = ;\n"); fs.writeFileSync(good, "module.exports = 1;\n");
+    ok("the default node --check rejects a broken file and accepts a good one", P.nodeCheck(bad) !== null && P.nodeCheck(good) === null); }
+  ok("apply with the default check succeeds on the staged file; rollback removes it", P.run({ mode: "apply", root, nowMs: SAT, log: quiet }) === 0 && P.run({ mode: "rollback", root, nowMs: SAT, log: quiet }) === 0 && !fs.existsSync(live));
   ok("the live repo itself is untouched by the selftest", !fs.existsSync(path.join(REPO, rel)));
 }
 
@@ -116,8 +118,12 @@ ok("the default OFF path is backend/data/cost-band-OFF beside the installed lib"
   ok("--apply without --restarted is refused", rc(["--apply"]) === 2);
   ok("--restarted must be a real date", rc(["--restarted", "2026-02-30", "--apply"]) === 2 && rc(["--restarted", "10/19/2026", "--dry"]) === 2);
   ok("--apply inside 13:50-15:50 MT on a trading day is refused", rc(["--restarted", "2026-10-14", "--apply"], WED14) === 2 && JSON.parse(fs.readFileSync(cr, "utf8")).length === 1);
-  ok("window edges: 13:49 and 15:50 MT pass the window check, 13:50 and 15:49 refuse", rc(["--restarted", "2026-10-21", "--apply"], mt("2026-10-14T13:50:00")) === 2 && rc(["--restarted", "2026-10-21", "--apply"], mt("2026-10-14T15:49:00")) === 2 && /in the future|after today/.test((out.length = 0, rc(["--restarted", "2026-10-21", "--apply"], mt("2026-10-14T13:49:00")), out.join(" "))) && /after today/.test((out.length = 0, rc(["--restarted", "2026-10-21", "--apply"], mt("2026-10-14T15:50:00")), out.join(" "))));
-  ok("a market holiday at 14:00 MT is outside the window", /after today/.test((out.length = 0, rc(["--restarted", "2026-12-01", "--apply"], Date.parse("2026-11-26T14:00:00-07:00")), out.join(" "))));
+  const said = (argv, nowMs) => { out.length = 0; const code = rc(argv, nowMs); return { code, text: out.join(" ") }; };
+  const inWin = (r) => r.code === 2 && /no-registry-write window/.test(r.text) && !/after today/.test(r.text);
+  const passedWin = (r) => r.code === 2 && /after today/.test(r.text) && !/no-registry-write window/.test(r.text);
+  ok("window edges: 13:50 and 15:49 MT refuse for the window", inWin(said(["--restarted", "2026-10-21", "--apply"], mt("2026-10-14T13:50:00"))) && inWin(said(["--restarted", "2026-10-21", "--apply"], mt("2026-10-14T15:49:00"))));
+  ok("window edges: 13:49 and 15:50 MT pass the window check", passedWin(said(["--restarted", "2026-10-21", "--apply"], mt("2026-10-14T13:49:00"))) && passedWin(said(["--restarted", "2026-10-21", "--apply"], mt("2026-10-14T15:50:00"))));
+  ok("a market holiday at 14:00 MT is outside the window", passedWin(said(["--restarted", "2026-12-01", "--apply"], Date.parse("2026-11-26T14:00:00-07:00"))));
   ok("--restarted in the future is refused", rc(["--restarted", "2026-10-20", "--apply"]) === 2);
   fs.writeFileSync(path.join(data, "registry-write.lock"), "{}");
   ok("a held registry lock refuses and is left in place", rc(["--restarted", "2026-10-16", "--apply"]) === 2 && fs.existsSync(path.join(data, "registry-write.lock")));
