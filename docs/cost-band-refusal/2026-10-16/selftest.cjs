@@ -100,6 +100,14 @@ ok("the default OFF path is backend/data/cost-band-OFF beside the installed lib"
   ok("a failed check after the write puts the file back (exit 1, absent again)", P.run({ mode: "apply", root, nowMs: SAT, log: quiet, checkImpl: () => "fake syntax error" }) === 1 && !fs.existsSync(live) && P.stateOf(rel, root).state === "base");
   { const bad = path.join(root, "broken.js"), good = path.join(root, "good.js"); fs.writeFileSync(bad, "const = ;\n"); fs.writeFileSync(good, "module.exports = 1;\n");
     ok("the default node --check rejects a broken file and accepts a good one", P.nodeCheck(bad) !== null && P.nodeCheck(good) === null); }
+  { // a copy of this package whose staged file is broken: run() with NO checkImpl must use node --check, fail and put the file back
+    const pk = path.join(tmp(), "pkg"), broken = path.join(pk, "staged", rel);
+    for (const f of ["pkg.cjs", "files.cjs", "loadcjs.cjs"]) { fs.mkdirSync(pk, { recursive: true }); fs.copyFileSync(path.join(PKG, f), path.join(pk, f)); }
+    fs.mkdirSync(path.join(pk, "base", "backend", "lib"), { recursive: true }); fs.writeFileSync(path.join(pk, "base", rel + ".absent"), "");
+    fs.mkdirSync(path.dirname(broken), { recursive: true }); fs.writeFileSync(broken, "const = ;\n");
+    const P2 = require(path.join(pk, "pkg.cjs"));
+    ok("apply with the default check refuses a broken staged file and leaves nothing behind", P2.run({ mode: "apply", root, nowMs: SAT, log: quiet }) === 1 && !fs.existsSync(live));
+  }
   ok("apply with the default check succeeds on the staged file; rollback removes it", P.run({ mode: "apply", root, nowMs: SAT, log: quiet }) === 0 && P.run({ mode: "rollback", root, nowMs: SAT, log: quiet }) === 0 && !fs.existsSync(live));
   ok("the live repo itself is untouched by the selftest", !fs.existsSync(path.join(REPO, rel)));
 }

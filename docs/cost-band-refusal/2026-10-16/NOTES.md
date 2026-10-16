@@ -15,7 +15,7 @@ New board stock tickets whose predicted round-trip cost (the stamped spread `obs
 | `deploy.cjs --plan / --apply` | writes staged over base. Refuses if anything has drifted (a live file matches neither base nor staged). Also refuses on a trading weekday between 05:30 and 16:00 MT. |
 | `rollback.cjs --plan / --rollback` | puts base back byte for byte, which here means removing the new file. Same refusals as deploy. |
 | `record.cjs --dry` / `--restarted YYYY-MM-DD --apply` | one change-registry row, `breaksComparability: true`, dated at the restart. Refuses between 13:50 and 15:50 MT on trading days, and when the registry lock is held. Never adds the same row twice. |
-| `selftest.cjs` | 71 checks on temp fixtures. Ends `SELFTEST PASSED (71 checks)`. |
+| `selftest.cjs` | 72 checks on temp fixtures. Ends `SELFTEST PASSED (72 checks)`. |
 | `pkg.cjs`, `files.cjs`, `loadcjs.cjs` | shared machinery for the scripts above |
 
 ### Rules the gate applies
@@ -80,6 +80,6 @@ The root `package.json` here is `"type": "module"` and there is no `backend/pack
 
 ## Checks run here
 
-- `node docs/cost-band-refusal/2026-10-16/selftest.cjs` → `SELFTEST PASSED (71 checks)`
+- `node docs/cost-band-refusal/2026-10-16/selftest.cjs` → `SELFTEST PASSED (72 checks)`
 - `node --check` on every script in the package
 - `deploy.cjs --plan` → `base backend/lib/cost-band-gate.js (new file; base is absent)`
